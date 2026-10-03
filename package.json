@@ -1,0 +1,67 @@
+{
+  "name": "school-management-system",
+  "version": "0.2.0",
+  "description": "CyberChris Offline School - School Management System",
+  "author": "CyberChris Offline School <christianpablahbaker@gmail.com>",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --x64",
+    "dist:portable": "electron-builder --win portable --x64"
+  },
+  "devDependencies": {
+    "electron": "^26.0.0",
+    "electron-builder": "^24.6.0",
+    "electron-reload": "^1.5.0"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "bootstrap-icons": "^1.13.1",
+    "chart.js": "^4.4.0",
+    "qrcode": "^1.5.4",
+    "sqlite3": "^5.1.6"
+  },
+  "build": {
+    "appId": "com.offlineschool.sms",
+    "productName": "CyberChris Offline School",
+
+    "npmRebuild": false,
+
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+
+    "files": [
+      "**/*",
+      "!dist/**"
+    ],
+
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "build/icon.ico"
+    },
+
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+
+      "allowToChangeInstallationDirectory": true,
+
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+
+      "shortcutName": "CyberChris Offline School",
+
+      "runAfterFinish": true,
+
+      "license": "build/license.txt",
+
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}

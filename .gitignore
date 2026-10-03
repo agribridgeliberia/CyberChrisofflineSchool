@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Build output
+/dist/
+
+# Local app data
+*.db
+database/*.db
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Logs
+npm-debug.log*
+
+# Electron packaging
+release/
+
+School Management System (1).zip

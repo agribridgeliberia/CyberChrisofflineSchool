@@ -1,0 +1,62 @@
+CYBERCHRIS OFFLINE SCHOOL
+
+SOFTWARE LICENSE AGREEMENT
+
+Copyright © 2026 CyberChris Offline School.
+All rights reserved.
+
+IMPORTANT — PLEASE READ THIS LICENSE AGREEMENT CAREFULLY BEFORE INSTALLING OR USING THIS SOFTWARE.
+
+1. GRANT OF LICENSE
+
+CyberChris Offline School grants the school or organization that has legally obtained this software a limited, non-exclusive, non-transferable license to install and use CyberChris Offline School on the authorized computer(s) for the period and under the conditions specified by the applicable subscription or license.
+
+2. AUTHORIZED USE
+
+This software is intended for school management and administrative purposes, including student records, academic records, fee management, reporting, and other features provided by the software.
+
+The software may not be copied, resold, redistributed, modified, reverse-engineered, or otherwise transferred to another person or organization without written authorization from CyberChris Offline School.
+
+3. SUBSCRIPTION AND LICENSE
+
+Certain features or continued use of the software may require an active license or subscription.
+
+The software may automatically restrict access when the applicable license or subscription expires.
+
+License activation information must not be shared, copied, sold, or distributed without authorization.
+
+4. DATA
+
+The school is responsible for maintaining appropriate backups of its data.
+
+CyberChris Offline School is not responsible for data loss resulting from hardware failure, accidental deletion, improper use, unauthorized modification, operating-system failure, or failure to maintain backups.
+
+5. SOFTWARE UPDATES
+
+CyberChris Offline School may provide software updates, improvements, bug fixes, security updates, or new features.
+
+Updates may be provided separately from the software license or subscription.
+
+6. PROHIBITED ACTIVITIES
+
+You may not:
+
+* Copy or distribute unauthorized copies of the software.
+* Sell, rent, lease, or sublicense the software without authorization.
+* Attempt to bypass or disable license restrictions.
+* Reverse-engineer, decompile, or disassemble the software except where expressly permitted by applicable law.
+* Modify the software to defeat its licensing or security mechanisms.
+
+7. DISCLAIMER
+
+The software is provided for its intended school-management purposes. While reasonable efforts are made to maintain reliability, CyberChris Offline School does not guarantee that the software will always be error-free or uninterrupted.
+
+8. ACCEPTANCE
+
+By installing or using CyberChris Offline School, you acknowledge that you have read, understood, and agreed to the terms of this License Agreement.
+
+If you do not agree to these terms, do not install or use the software.
+
+CyberChris Offline School
+© 2026 CyberChris Offline School
+All rights reserved.
