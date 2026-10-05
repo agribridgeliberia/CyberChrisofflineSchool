@@ -21,6 +21,93 @@ function getDefaultMarqueeText() {
   return 'CyberChris Offline School Management System • Simplifying School Administration • Managing Students, Academics, Fees & Financial Records with Ease. ✨'
 }
 
+function showLicenseActivation(status = {}) {
+  const existing = document.getElementById('licenseOverlay')
+  if (existing) existing.remove()
+
+  const overlay = document.createElement('div')
+  overlay.id = 'licenseOverlay'
+  overlay.className = 'license-overlay'
+  const isExpired = String(status.status || 'NOT_ACTIVATED').toUpperCase() === 'EXPIRED'
+  const isSuspended = String(status.status || '').toUpperCase() === 'SUSPENDED'
+  const safeStatus = String(status.status || 'NOT_ACTIVATED').toUpperCase()
+  overlay.innerHTML = `
+    <div class="license-screen">
+      <div class="license-card" role="dialog" aria-modal="true" aria-labelledby="licenseTitle">
+        <div class="license-badge">CYBERCHRIS OFFLINE SCHOOL</div>
+        <h2 id="licenseTitle">${isSuspended ? 'LICENSE DEACTIVATED' : isExpired ? 'LICENSE EXPIRED' : 'ACTIVATION REQUIRED'}</h2>
+        <p class="license-message">
+          ${isSuspended
+            ? 'This installation has been deactivated. Enter a new valid activation voucher to continue using the application.'
+            : isExpired
+            ? 'Your offline software license has expired. Please enter a valid activation voucher to continue using the application.'
+            : 'A valid license is required before the application can be used. Enter your activation voucher to continue.'}
+        </p>
+        <div class="license-state-row">
+          <span class="license-pill">${safeStatus}</span>
+          ${status.end_date ? `<span class="license-date">Expires: ${escapeHtml(status.end_date)}</span>` : ''}
+        </div>
+        <form id="licenseActivationForm" class="license-form">
+          <label for="licenseVoucherInput">Activation voucher</label>
+          <input id="licenseVoucherInput" type="text" class="form-control" placeholder="XXXX-XXXX-XXXX-XXXX" maxlength="40" required>
+          <button type="submit" class="btn btn-accent w-100 mt-3">ACTIVATE</button>
+        </form>
+        <div id="licenseError" class="license-error"></div>
+        ${status.clockRollbackNotice ? `<div class="license-warning">${escapeHtml(status.clockRollbackNotice)}</div>` : ''}
+        <button type="button" id="openDeveloperFromLicense" class="btn btn-outline-secondary w-100 mt-2"><i class="bi bi-shield-lock"></i> Developer Screen</button>
+      </div>
+    </div>
+  `
+
+  document.body.appendChild(overlay)
+  const input = document.getElementById('licenseVoucherInput')
+  if (input) input.focus()
+  document.getElementById('openDeveloperFromLicense').addEventListener('click', () => openDeveloperScreen(true))
+
+  const form = document.getElementById('licenseActivationForm')
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    const voucher = document.getElementById('licenseVoucherInput').value.trim()
+    const errorBox = document.getElementById('licenseError')
+    const submitBtn = form.querySelector('button')
+    if (!voucher) {
+      errorBox.textContent = 'Please enter a valid activation voucher.'
+      return
+    }
+
+    submitBtn.disabled = true
+    submitBtn.textContent = 'ACTIVATING...'
+    errorBox.textContent = ''
+
+    try {
+      const result = await window.api.activateLicense(voucher)
+      if (!result.success) {
+        errorBox.textContent = result.error || 'Invalid or already-used activation voucher.'
+        submitBtn.disabled = false
+        submitBtn.textContent = 'ACTIVATE'
+        return
+      }
+      window.location.reload()
+    } catch (error) {
+      errorBox.textContent = 'Unable to activate the application. Please try again.'
+      submitBtn.disabled = false
+      submitBtn.textContent = 'ACTIVATE'
+    }
+  })
+}
+
+async function enforceLicenseOnVisibleState() {
+  if (document.getElementById('developerOverlay')) return true
+  const status = await window.api.getLicenseState()
+  if (!status || !status.canUseApp) {
+    showLicenseActivation(status)
+    return false
+  }
+  const existing = document.getElementById('licenseOverlay')
+  if (existing) existing.remove()
+  return true
+}
+
 function maybeGetSchoolMotto() {
   try {
     if (!window.api || typeof window.api.getSchoolProfile !== 'function') return getDefaultMarqueeText()
@@ -38,9 +125,31 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Load theme preference from localStorage
   const theme = localStorage.getItem('appTheme') || 'light'
   applyTheme(theme)
-  
-  // initialize DB and check authentication
+
   await window.api.initDb()
+  const licenseStatus = await window.api.getLicenseState()
+  if (!licenseStatus || !licenseStatus.canUseApp) {
+    showLicenseActivation(licenseStatus)
+    document.addEventListener('visibilitychange', async () => {
+      if (document.visibilityState === 'visible') {
+        await enforceLicenseOnVisibleState()
+      }
+    })
+    window.addEventListener('focus', async () => {
+      await enforceLicenseOnVisibleState()
+    })
+    return
+  }
+
+  document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState === 'visible') {
+      await enforceLicenseOnVisibleState()
+    }
+  })
+  window.addEventListener('focus', async () => {
+    await enforceLicenseOnVisibleState()
+  })
+
   const me = await window.api.me()
   if (!me || !me.user) {
     showLogin()
@@ -105,6 +214,7 @@ async function renderShell() {
           <a id="navAdmission" class="nav-link text-white" href="#/admission"><i class="bi bi-person-plus" aria-hidden="true"></i><span>Admission</span></a>
           <a id="navFinance" class="nav-link text-white" href="#/finance"><i class="bi bi-cash-stack" aria-hidden="true"></i><span>Finance</span></a>
           <a id="navSettings" class="nav-link text-white" href="#/settings"><i class="bi bi-gear" aria-hidden="true"></i><span>Settings</span></a>
+          <a id="navDeveloper" class="nav-link text-white" href="#/developer"><i class="bi bi-shield-lock" aria-hidden="true"></i><span>Developer Screen</span></a>
           <a id="navAcademics" class="nav-link text-white" href="#/academics"><i class="bi bi-mortarboard" aria-hidden="true"></i><span>Academics</span></a>
         </nav>
       </div>
@@ -130,12 +240,189 @@ async function renderShell() {
   const navAdmission = document.getElementById('navAdmission')
   const navFinance = document.getElementById('navFinance')
   const navSettings = document.getElementById('navSettings')
+  const navDeveloper = document.getElementById('navDeveloper')
   const navAcademics = document.getElementById('navAcademics')
   if (navDashboard) navDashboard.addEventListener('click', (e) => { e.preventDefault(); loadDashboard() })
   if (navAdmission) navAdmission.addEventListener('click', (e) => { e.preventDefault(); loadAdmissionRecords() })
   if (navFinance) navFinance.addEventListener('click', (e) => { e.preventDefault(); loadFinance() })
   if (navSettings) navSettings.addEventListener('click', (e) => { e.preventDefault(); loadSettings() })
+  if (navDeveloper) navDeveloper.addEventListener('click', (e) => { e.preventDefault(); openDeveloperScreen(false) })
   if (navAcademics) navAcademics.addEventListener('click', (e) => { e.preventDefault(); loadAcademics() })
+}
+
+async function openDeveloperScreen(activationMode = false) {
+  const existing = document.getElementById('developerOverlay')
+  if (existing) existing.remove()
+
+  const overlay = document.createElement('div')
+  overlay.id = 'developerOverlay'
+  overlay.className = 'developer-overlay'
+  overlay.innerHTML = `
+    <section class="developer-panel" role="dialog" aria-modal="true" aria-labelledby="developerTitle">
+      <div class="developer-heading"><div><span>OFFLINE LICENSE MANAGEMENT</span><h2 id="developerTitle">Developer Screen</h2></div><button type="button" id="closeDeveloperScreen" class="btn btn-outline-secondary"><i class="bi bi-x-lg"></i> Close</button></div>
+      <div id="developerAccessForm"></div>
+    </section>
+  `
+  document.body.appendChild(overlay)
+
+  const closeOverlay = async () => {
+    await window.api.closeDeveloperScreen()
+    overlay.remove()
+    if (!activationMode) await enforceLicenseOnVisibleState()
+  }
+  overlay.querySelector('#closeDeveloperScreen').addEventListener('click', closeOverlay)
+  const status = await window.api.getDeveloperCredentialStatus()
+  if (!status.success) {
+    overlay.querySelector('#developerAccessForm').innerHTML = `<p class="developer-access-error">${escapeHtml(status.error || 'Unable to check Developer Screen credentials.')}</p>`
+    return
+  }
+  const setupRequired = !status.configured
+  overlay.querySelector('#developerAccessForm').innerHTML = setupRequired ? `
+    <form id="developerLoginForm" class="developer-login-form">
+      <p>Set a separate Developer Screen password. Verify your administrator account first; the new password must be different.</p>
+      <label>Administrator username<input id="developerAdminUsername" class="form-control" autocomplete="username" required></label>
+      <label>Administrator password<input id="developerAdminPassword" type="password" class="form-control" autocomplete="current-password" required></label>
+      <label>New Developer Screen password<input id="developerPassword" type="password" class="form-control" minlength="8" autocomplete="new-password" required></label>
+      <label>Confirm Developer Screen password<input id="developerPasswordConfirm" type="password" class="form-control" minlength="8" autocomplete="new-password" required></label>
+      <div id="developerLoginError" class="text-danger small" role="alert"></div>
+      <button type="submit" class="btn btn-new"><i class="bi bi-shield-lock"></i> Set Password and Continue</button>
+    </form>
+  ` : `
+    <form id="developerLoginForm" class="developer-login-form">
+      <p>Enter the separate Developer Screen password to manage licenses and vouchers.</p>
+      <label>Developer Screen password<input id="developerPassword" type="password" class="form-control" autocomplete="current-password" required></label>
+      <div id="developerLoginError" class="text-danger small" role="alert"></div>
+      <button type="submit" class="btn btn-new"><i class="bi bi-unlock"></i> Unlock Developer Screen</button>
+    </form>
+  `
+  overlay.querySelector('#developerLoginForm').addEventListener('submit', async event => {
+    event.preventDefault()
+    const errorBox = overlay.querySelector('#developerLoginError')
+    const submitButton = event.currentTarget.querySelector('button[type="submit"]')
+    const password = overlay.querySelector('#developerPassword').value
+    submitButton.disabled = true
+    errorBox.textContent = ''
+    let result
+    if (setupRequired) {
+      if (password !== overlay.querySelector('#developerPasswordConfirm').value) {
+        errorBox.textContent = 'Developer Screen passwords do not match.'
+        submitButton.disabled = false
+        return
+      }
+      result = await window.api.setupDeveloperCredential({
+        adminUsername: overlay.querySelector('#developerAdminUsername').value.trim(),
+        adminPassword: overlay.querySelector('#developerAdminPassword').value,
+        developerPassword: password
+      })
+    } else {
+      result = await window.api.authenticateDeveloper(password)
+    }
+    if (!result.success) {
+      errorBox.textContent = result.error || 'Unable to unlock Developer Screen.'
+      submitButton.disabled = false
+      return
+    }
+    await renderDeveloperWorkspace(overlay, activationMode)
+  })
+}
+
+async function renderDeveloperWorkspace(overlay, activationMode) {
+  const licenseState = await window.api.getLicenseState()
+  overlay.querySelector('.developer-panel').innerHTML = `
+    <div class="developer-heading"><div><span>OFFLINE LICENSE MANAGEMENT</span><h2>Developer Screen</h2></div><button type="button" id="closeDeveloperScreen" class="btn btn-outline-secondary"><i class="bi bi-x-lg"></i> Close</button></div>
+    <section class="developer-license-section"><div><span class="developer-license-label">THIS INSTALLATION</span><h3>${escapeHtml(String(licenseState.status || 'NOT_ACTIVATED'))}</h3><p>${licenseState.end_date ? `License expiry: ${escapeHtml(licenseState.end_date)}` : 'No license is currently activated.'}</p></div><button type="button" id="deactivateInstalledLicense" class="btn btn-outline-danger" ${licenseState.canUseApp ? '' : 'disabled'}><i class="bi bi-slash-circle"></i> Deactivate this installation</button><div id="developerLicenseMessage" role="status"></div></section>
+    <section class="developer-create"><div><h3>Generate vouchers</h3><p>New codes are saved locally and can be issued to schools.</p></div>
+      <form id="developerVoucherForm"><label>License duration<select id="developerDuration" class="form-select"><option value="1">1 month</option><option value="6">6 months</option><option value="10">10 months</option><option value="12">12 months</option></select></label><label>Quantity<input id="developerQuantity" class="form-control" type="number" min="1" max="100" value="1" required></label><button type="submit" class="btn btn-new"><i class="bi bi-plus-lg"></i> Generate</button></form>
+      <div id="developerCreateMessage" class="developer-message" role="status"></div><div id="developerNewCodes" class="developer-new-codes"></div>
+    </section>
+    <section class="developer-voucher-section"><div class="developer-section-heading"><div><h3>Voucher inventory</h3><p id="developerVoucherCount">Loading vouchers...</p></div><button type="button" id="refreshDeveloperVouchers" class="btn btn-outline-secondary" title="Refresh voucher list"><i class="bi bi-arrow-clockwise"></i></button></div>
+      <div class="developer-table-wrap"><table class="table table-sm"><thead><tr><th>Voucher code</th><th>Duration</th><th>Status</th><th>Created</th><th>Used</th><th></th></tr></thead><tbody id="developerVoucherRows"></tbody></table></div>
+    </section>
+    <details class="developer-change-password"><summary>Change Developer Screen password</summary><form id="developerPasswordChangeForm"><label>Current password<input id="currentDeveloperPassword" type="password" class="form-control" autocomplete="current-password" required></label><label>New password<input id="newDeveloperPassword" type="password" class="form-control" minlength="8" autocomplete="new-password" required></label><label>Confirm new password<input id="confirmDeveloperPassword" type="password" class="form-control" minlength="8" autocomplete="new-password" required></label><div id="developerPasswordChangeMessage" role="status"></div><button type="submit" class="btn btn-outline-secondary">Update password</button></form></details>
+  `
+  const close = async () => {
+    await window.api.closeDeveloperScreen()
+    overlay.remove()
+    if (!activationMode) await enforceLicenseOnVisibleState()
+  }
+  overlay.querySelector('#closeDeveloperScreen').addEventListener('click', close)
+
+  overlay.querySelector('#deactivateInstalledLicense').addEventListener('click', async event => {
+    if (!window.confirm('Deactivate the license on this installation immediately? The app will return to the activation screen.')) return
+    const button = event.currentTarget
+    button.disabled = true
+    const result = await window.api.deactivateInstalledLicense()
+    if (!result.success) {
+      overlay.querySelector('#developerLicenseMessage').textContent = result.error || 'Unable to deactivate this installation.'
+      button.disabled = false
+      return
+    }
+    const suspendedState = await window.api.getLicenseState()
+    await window.api.closeDeveloperScreen()
+    overlay.remove()
+    showLicenseActivation(suspendedState)
+  })
+
+  overlay.querySelector('#developerPasswordChangeForm').addEventListener('submit', async event => {
+    event.preventDefault()
+    const newPassword = overlay.querySelector('#newDeveloperPassword').value
+    const message = overlay.querySelector('#developerPasswordChangeMessage')
+    if (newPassword !== overlay.querySelector('#confirmDeveloperPassword').value) {
+      message.textContent = 'New Developer Screen passwords do not match.'
+      return
+    }
+    const result = await window.api.changeDeveloperCredential({
+      currentPassword: overlay.querySelector('#currentDeveloperPassword').value,
+      newPassword
+    })
+    message.textContent = result.success ? 'Developer Screen password updated.' : result.error || 'Unable to update the password.'
+    if (result.success) event.currentTarget.reset()
+  })
+
+  const refreshVouchers = async () => {
+    const result = await window.api.listDeveloperVouchers()
+    if (!result.success) {
+      overlay.querySelector('#developerVoucherCount').textContent = result.error || 'Unable to load vouchers.'
+      return
+    }
+    const vouchers = result.vouchers || []
+    overlay.querySelector('#developerVoucherCount').textContent = `${vouchers.length} voucher${vouchers.length === 1 ? '' : 's'}`
+    overlay.querySelector('#developerVoucherRows').innerHTML = vouchers.length ? vouchers.map(voucher => `<tr><td><code>${escapeHtml(voucher.voucher_code)}</code></td><td>${Number(voucher.duration_months)} month${Number(voucher.duration_months) === 1 ? '' : 's'}</td><td><span class="developer-voucher-status ${Number(voucher.is_used) ? 'used' : 'available'}">${Number(voucher.is_used) ? 'Used' : 'Available'}</span></td><td>${escapeHtml(String(voucher.created_at || '').slice(0, 10))}</td><td>${escapeHtml(String(voucher.used_at || '').slice(0, 10) || '—')}</td><td><button type="button" class="btn btn-sm btn-outline-secondary copy-developer-voucher" data-code="${escapeHtml(voucher.voucher_code)}" title="Copy voucher"><i class="bi bi-copy"></i></button></td></tr>`).join('') : '<tr><td colspan="6" class="text-center text-muted">No vouchers generated yet.</td></tr>'
+  }
+  overlay.querySelector('#refreshDeveloperVouchers').addEventListener('click', refreshVouchers)
+  overlay.querySelector('#developerVoucherRows').addEventListener('click', async event => {
+    const button = event.target.closest('.copy-developer-voucher')
+    if (!button) return
+    try {
+      await navigator.clipboard.writeText(button.dataset.code)
+      overlay.querySelector('#developerCreateMessage').textContent = 'Voucher copied to clipboard.'
+    } catch (error) {
+      overlay.querySelector('#developerCreateMessage').textContent = 'Clipboard access is unavailable. Select and copy the voucher code.'
+    }
+  })
+  overlay.querySelector('#developerVoucherForm').addEventListener('submit', async event => {
+    event.preventDefault()
+    const button = event.currentTarget.querySelector('button[type="submit"]')
+    const message = overlay.querySelector('#developerCreateMessage')
+    const codesBox = overlay.querySelector('#developerNewCodes')
+    button.disabled = true
+    message.textContent = ''
+    codesBox.textContent = ''
+    const result = await window.api.createDeveloperVouchers({
+      duration_months: Number(overlay.querySelector('#developerDuration').value),
+      quantity: Number(overlay.querySelector('#developerQuantity').value),
+      license_type: 'Standard'
+    })
+    button.disabled = false
+    if (!result.success) {
+      message.textContent = result.error || 'Unable to generate vouchers.'
+      return
+    }
+    message.textContent = `Generated ${result.codes.length} voucher${result.codes.length === 1 ? '' : 's'}. Store these codes securely.`
+    codesBox.textContent = result.codes.join('\n')
+    await refreshVouchers()
+  })
+  await refreshVouchers()
 }
 
 function showChangePasswordDialog() {
@@ -203,7 +490,7 @@ function showLogin() {
                 <input class="form-check-input" type="checkbox" value="" id="rememberMe">
                 <label class="form-check-label" for="rememberMe">Remember me</label>
               </div>
-              <div><small class="text-muted">Version 1.0.0</small></div>
+              <div><small class="text-muted">Version 3.0.0</small></div>
             </div>
 
             <div class="inline-error" id="loginError">Invalid credentials. Please try again.</div>
@@ -1802,7 +2089,7 @@ function showReceiptSuccess(receipt, refreshAccount) {
   overlay.className = 'print-preview-overlay'
   const money = cents => `L$${(Number(cents || 0) / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
   const school = receipt.school || {}
-  overlay.innerHTML = `<div class="print-preview-dialog receipt-dialog" role="dialog" aria-modal="true"><div class="print-preview-toolbar"><h3>Payment recorded</h3><button class="btn btn-outline-secondary" id="closeReceipt">Close</button></div><div class="print-preview-page receipt-paper"><header class="receipt-letterhead">${school.logo_data ? `<img src="${school.logo_data}" alt="School logo">` : ''}<div><div class="receipt-kicker">${escapeHtml(school.school_name || 'School')}</div><h1>Official Payment Receipt</h1>${school.address ? `<p>${escapeHtml(school.address)}</p>` : ''}${school.motto ? `<em>${escapeHtml(school.motto)}</em>` : ''}</div><div class="receipt-status">VALID</div></header><div class="receipt-meta"><div><span>Receipt Number</span><strong>${escapeHtml(receipt.receiptNumber)}</strong></div><div><span>Payment Date</span><strong>${escapeHtml(receipt.paymentDate)}</strong></div><div><span>Payment Method</span><strong>${escapeHtml(receipt.method)}</strong></div><div><span>Reference</span><strong>${escapeHtml(receipt.reference || 'None')}</strong></div></div><section class="receipt-student"><span>Received from</span><strong>${escapeHtml(receipt.student.full_name)}</strong><small>${escapeHtml(receipt.student.student_id)} · ${escapeHtml(receipt.student.class_name)} · Academic Year ${escapeHtml(receipt.student.academic_year)}</small></section><section class="receipt-amount"><span>Amount Paid</span><strong>${money(receipt.amount)}</strong></section><div class="receipt-balance"><div><span>Previous balance</span><strong>${money(receipt.previousBalance)}</strong></div><div><span>New balance</span><strong>${money(receipt.newBalance)}</strong></div></div><footer class="receipt-footer"><div><p>Keep this receipt for your records.</p><small>Scan the QR code to verify the receipt details.</small></div>${receipt.qrDataUrl ? `<img class="receipt-qr" src="${receipt.qrDataUrl}" alt="Receipt verification QR code">` : '<div class="receipt-qr-missing">QR unavailable</div>'}</footer><div class="toast-actions receipt-actions"><button class="btn btn-outline-primary" id="printReceipt"><i class="bi bi-printer"></i> Print Receipt</button><button class="btn btn-new" id="saveReceipt"><i class="bi bi-download"></i> Save Receipt</button></div></div></div>`
+  overlay.innerHTML = `<div class="print-preview-dialog receipt-dialog" role="dialog" aria-modal="true"><div class="print-preview-toolbar"><h3>Payment recorded</h3><button class="btn btn-outline-secondary" id="closeReceipt">Close</button></div><div class="print-preview-page receipt-paper"><header class="receipt-letterhead">${school.logo_data ? `<img src="${school.logo_data}" alt="School logo">` : ''}<div><div class="receipt-kicker">${escapeHtml(school.school_name || 'School')}</div><h1>Official Payment Receipt</h1>${school.address ? `<p>${escapeHtml(school.address)}</p>` : ''}${school.motto ? `<em>${escapeHtml(school.motto)}</em>` : ''}</div><div class="receipt-status">VALID</div></header><div class="receipt-meta"><div><span>Receipt Number</span><strong>${escapeHtml(receipt.receiptNumber)}</strong></div><div><span>Payment Date</span><strong>${escapeHtml(receipt.paymentDate)}</strong></div><div><span>Payment Method</span><strong>${escapeHtml(receipt.method)}</strong></div><div><span>Reference</span><strong>${escapeHtml(receipt.reference || 'None')}</strong></div></div><section class="receipt-student"><span>Received from</span><strong>${escapeHtml(receipt.student.full_name)}</strong><small>${escapeHtml(receipt.student.student_id)} · ${escapeHtml(receipt.student.class_name)} · Academic Year ${escapeHtml(receipt.student.academic_year)}</small></section><section class="receipt-amount"><span>Amount Paid</span><strong>${money(receipt.amount)}</strong></section><div class="receipt-balance"><div><span>Previous balance</span><strong>${money(receipt.previousBalance)}</strong></div><div><span>New balance</span><strong>${money(receipt.newBalance)}</strong></div></div><footer class="receipt-footer"><div><p>Keep this receipt for your records.</p><small>Scan the QR code to verify the receipt details.</small></div>${receipt.qrDataUrl ? `<div class="receipt-qr-wrap"><img class="receipt-qr" src="${receipt.qrDataUrl}" alt="Receipt verification QR code"></div>` : '<div class="receipt-qr-missing">QR unavailable</div>'}</footer><div class="toast-actions receipt-actions"><button class="btn btn-outline-primary" id="printReceipt"><i class="bi bi-printer"></i> Print Receipt</button><button class="btn btn-new" id="saveReceipt"><i class="bi bi-download"></i> Save Receipt</button></div></div></div>`
   document.body.appendChild(overlay)
   const close = () => { overlay.remove(); refreshAccount() }
   overlay.querySelector('#closeReceipt').addEventListener('click', close)

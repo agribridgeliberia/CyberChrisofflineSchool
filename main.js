@@ -5,6 +5,15 @@ const db = require(path.join(__dirname, 'database', 'database.js'))
 const QRCode = require('qrcode')
 
 let currentUser = null
+let developerAuthorized = false
+
+async function requireActiveLicense() {
+  const state = await db.getLicenseState()
+  if (!state || !state.canUseApp) {
+    return { success: false, error: 'Application license is expired or inactive.', status: state || { status: 'NOT_ACTIVATED', canUseApp: false } }
+  }
+  return { success: true, status: state }
+}
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -17,6 +26,9 @@ function createWindow() {
     }
   })
 
+  win.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) developerAuthorized = false
+  })
   win.loadFile(path.join(__dirname, 'src', 'index.html'))
 }
 
@@ -49,7 +61,62 @@ ipcMain.handle('db-init', async () => {
   return db.init()
 })
 
+ipcMain.handle('license-check', async () => {
+  return db.getLicenseState()
+})
+
+ipcMain.handle('license-activate', async (event, voucherCode) => {
+  return db.activateLicense(voucherCode)
+})
+
+ipcMain.handle('developer-credential-status', async () => db.getDeveloperCredentialStatus())
+
+ipcMain.handle('developer-credential-setup', async (event, credentials = {}) => {
+  developerAuthorized = false
+  const result = await db.setupDeveloperCredential(credentials.adminUsername, credentials.adminPassword, credentials.developerPassword)
+  if (!result.success) return result
+  developerAuthorized = true
+  return { success: true }
+})
+
+ipcMain.handle('developer-authenticate', async (event, password) => {
+  developerAuthorized = false
+  const result = await db.verifyDeveloperCredential(password)
+  if (!result.success) return result
+  developerAuthorized = true
+  return { success: true }
+})
+
+ipcMain.handle('developer-credential-change', async (event, passwords = {}) => {
+  if (!developerAuthorized) return { success: false, error: 'Developer Screen authorization is required.' }
+  return db.changeDeveloperCredential(passwords.currentPassword, passwords.newPassword)
+})
+
+ipcMain.handle('developer-vouchers-list', async () => {
+  if (!developerAuthorized) return { success: false, error: 'Developer Screen authorization is required.' }
+  return db.listVouchers()
+})
+
+ipcMain.handle('developer-vouchers-create', async (event, options) => {
+  if (!developerAuthorized) return { success: false, error: 'Developer Screen authorization is required.' }
+  return db.createVoucherBatch(options)
+})
+
+ipcMain.handle('developer-license-deactivate', async () => {
+  if (!developerAuthorized) return { success: false, error: 'Developer Screen authorization is required.' }
+  return db.deactivateLicense()
+})
+
+ipcMain.handle('developer-screen-close', async () => {
+  developerAuthorized = false
+  return { success: true }
+})
+
 ipcMain.handle('auth-login', async (event, { username, password }) => {
+  const licenseGuard = await requireActiveLicense()
+  if (!licenseGuard.success) {
+    return { success: false, error: 'Application license is expired or inactive. Please activate a valid voucher.', licenseBlocked: true, status: licenseGuard.status }
+  }
   console.log('[AUTH] login attempt:', { username })
   const res = await db.verifyUser(username, password)
   console.log('[AUTH] verifyUser result:', res)
@@ -64,10 +131,15 @@ ipcMain.handle('auth-login', async (event, { username, password }) => {
 
 ipcMain.handle('auth-logout', async () => {
   currentUser = null
+  developerAuthorized = false
   return { success: true }
 })
 
 ipcMain.handle('auth-change-password', async (event, passwords) => {
+  const licenseGuard = await requireActiveLicense()
+  if (!licenseGuard.success) {
+    return { success: false, error: 'Application license is expired or inactive. Please activate a valid voucher.', licenseBlocked: true, status: licenseGuard.status }
+  }
   if (!currentUser) return { success: false, error: 'You must be signed in.' }
   return db.changePassword(currentUser.id, passwords.currentPassword, passwords.newPassword)
 })
@@ -84,6 +156,10 @@ ipcMain.handle('generate-student-id', async (event, academicYear) => {
 })
 
 ipcMain.handle('student-add', async (event, student) => {
+  const licenseGuard = await requireActiveLicense()
+  if (!licenseGuard.success) {
+    return { success: false, error: 'Application license is expired or inactive. Please activate a valid voucher.', licenseBlocked: true, status: licenseGuard.status }
+  }
   return db.addStudent(student)
 })
 
@@ -92,10 +168,18 @@ ipcMain.handle('student-list', async (event, opts) => {
 })
 
 ipcMain.handle('student-update', async (event, student) => {
+  const licenseGuard = await requireActiveLicense()
+  if (!licenseGuard.success) {
+    return { success: false, error: 'Application license is expired or inactive. Please activate a valid voucher.', licenseBlocked: true, status: licenseGuard.status }
+  }
   return db.updateStudent(student)
 })
 
 ipcMain.handle('student-delete', async (event, studentId) => {
+  const licenseGuard = await requireActiveLicense()
+  if (!licenseGuard.success) {
+    return { success: false, error: 'Application license is expired or inactive. Please activate a valid voucher.', licenseBlocked: true, status: licenseGuard.status }
+  }
   return db.deleteStudent(studentId)
 })
 
@@ -104,8 +188,20 @@ ipcMain.handle('finance-setup-list', async () => {
 })
 
 ipcMain.handle('finance-fee-templates-list', async () => db.listFeeTemplates())
-ipcMain.handle('finance-fee-template-save', async (event, template) => db.saveFeeTemplate(template))
-ipcMain.handle('finance-fee-template-delete', async (event, templateId) => db.deleteFeeTemplate(templateId))
+ipcMain.handle('finance-fee-template-save', async (event, template) => {
+  const licenseGuard = await requireActiveLicense()
+  if (!licenseGuard.success) {
+    return { success: false, error: 'Application license is expired or inactive. Please activate a valid voucher.', licenseBlocked: true, status: licenseGuard.status }
+  }
+  return db.saveFeeTemplate(template)
+})
+ipcMain.handle('finance-fee-template-delete', async (event, templateId) => {
+  const licenseGuard = await requireActiveLicense()
+  if (!licenseGuard.success) {
+    return { success: false, error: 'Application license is expired or inactive. Please activate a valid voucher.', licenseBlocked: true, status: licenseGuard.status }
+  }
+  return db.deleteFeeTemplate(templateId)
+})
 
 ipcMain.handle('finance-summary', async () => {
   return db.getFinanceSummary()
@@ -124,11 +220,19 @@ ipcMain.handle('finance-account-get', async (event, { studentId, academicYear })
 })
 
 ipcMain.handle('finance-payment-record', async (event, payment) => {
+  const licenseGuard = await requireActiveLicense()
+  if (!licenseGuard.success) {
+    return { success: false, error: 'Application license is expired or inactive. Please activate a valid voucher.', licenseBlocked: true, status: licenseGuard.status }
+  }
   if (!currentUser) return { success: false, error: 'You must be signed in to record a payment.' }
   return db.recordPayment(payment, currentUser.id)
 })
 
 ipcMain.handle('finance-payment-correct', async (event, correction) => {
+  const licenseGuard = await requireActiveLicense()
+  if (!licenseGuard.success) {
+    return { success: false, error: 'Application license is expired or inactive. Please activate a valid voucher.', licenseBlocked: true, status: licenseGuard.status }
+  }
   if (!currentUser || String(currentUser.role || '').toLowerCase() !== 'admin') {
     return { success: false, error: 'Only an administrator can correct recorded payments.' }
   }
@@ -136,6 +240,10 @@ ipcMain.handle('finance-payment-correct', async (event, correction) => {
 })
 
 ipcMain.handle('finance-expense-record', async (event, expense) => {
+  const licenseGuard = await requireActiveLicense()
+  if (!licenseGuard.success) {
+    return { success: false, error: 'Application license is expired or inactive. Please activate a valid voucher.', licenseBlocked: true, status: licenseGuard.status }
+  }
   if (!currentUser) return { success: false, error: 'You must be signed in to record an expenditure.' }
   return db.recordExpense(expense, currentUser.id)
 })
@@ -165,7 +273,18 @@ ipcMain.handle('finance-receipt-save', async (event, receipt) => {
 })
 
 ipcMain.handle('finance-receipt-qr', async (event, payload) => {
-  try { return { success: true, dataUrl: await QRCode.toDataURL(JSON.stringify(payload), { width: 180, margin: 1, errorCorrectionLevel: 'M' }) } } catch (error) { return { success: false, error: error.message } }
+  try {
+    return {
+      success: true,
+      dataUrl: await QRCode.toDataURL(JSON.stringify(payload), {
+        width: 240,
+        margin: 1,
+        errorCorrectionLevel: 'M'
+      })
+    }
+  } catch (error) {
+    return { success: false, error: error.message }
+  }
 })
 
 ipcMain.handle('dashboard-summary', async () => {
@@ -173,6 +292,10 @@ ipcMain.handle('dashboard-summary', async () => {
 })
 
 ipcMain.handle('database-backup', async () => {
+  const licenseGuard = await requireActiveLicense()
+  if (!licenseGuard.success) {
+    return { success: false, error: 'Application license is expired or inactive. Please activate a valid voucher.', licenseBlocked: true, status: licenseGuard.status }
+  }
   const result = await dialog.showSaveDialog({
     title: 'Backup School Records',
     defaultPath: `school-backup-${new Date().toISOString().slice(0, 10)}.db`,
@@ -183,6 +306,10 @@ ipcMain.handle('database-backup', async () => {
 })
 
 ipcMain.handle('database-restore', async () => {
+  const licenseGuard = await requireActiveLicense()
+  if (!licenseGuard.success) {
+    return { success: false, error: 'Application license is expired or inactive. Please activate a valid voucher.', licenseBlocked: true, status: licenseGuard.status }
+  }
   const result = await dialog.showOpenDialog({
     title: 'Restore School Records',
     properties: ['openFile'],

@@ -40,6 +40,48 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 
+CREATE TABLE IF NOT EXISTS vouchers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  voucher_code TEXT NOT NULL UNIQUE,
+  license_type TEXT NOT NULL,
+  duration_months INTEGER NOT NULL CHECK (duration_months > 0),
+  is_used INTEGER NOT NULL DEFAULT 0 CHECK (is_used IN (0, 1)),
+  used_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS licenses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  start_date TEXT NOT NULL,
+  end_date TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'EXPIRED', 'NOT_ACTIVATED', 'INVALID', 'SUSPENDED')),
+  activated_at TEXT NOT NULL,
+  last_checked_date TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS developer_credentials (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  password_hash TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS license_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  start_date TEXT NOT NULL,
+  end_date TEXT NOT NULL,
+  license_type TEXT NOT NULL,
+  voucher_code TEXT,
+  activated_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_vouchers_code ON vouchers(voucher_code);
+CREATE INDEX IF NOT EXISTS idx_licenses_status ON licenses(status);
+CREATE INDEX IF NOT EXISTS idx_license_history_activated ON license_history(activated_at);
+
 CREATE TABLE IF NOT EXISTS school_profile (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   school_name TEXT NOT NULL DEFAULT 'CyberChris Offline School',

@@ -10,8 +10,27 @@ const OPERATIONAL_TABLES = ['students', 'academic_years', 'semesters', 'classes'
 const CONFIGURATION_TABLES = ['users', 'school_profile', 'audit_logs', 'expense_categories', 'fee_types', 'fee_groups', 'class_fee_groups', 'fee_structures', 'payment_schedules']
 
 function getDatabasePath() {
+  if (process.env.SCHOOL_DB_PATH) return process.env.SCHOOL_DB_PATH
   if (electron && electron.app && electron.app.isPackaged) return path.join(electron.app.getPath('userData'), 'school.db')
   return path.join(__dirname, 'school.db')
+}
+
+function toDateInputString(date) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function addMonths(date, monthsToAdd) {
+  const result = new Date(date.getTime())
+  const targetMonth = result.getMonth() + monthsToAdd
+  result.setMonth(targetMonth)
+  return result
+}
+
+function normalizeVoucherCode(voucherCode) {
+  return String(voucherCode || '').trim().toUpperCase().replace(/[^A-Z0-9-]/g, '')
 }
 
 function canonicalClassName(value) {
@@ -248,11 +267,95 @@ async function verifyUser(username, password) {
   }
 }
 
+async function getDeveloperCredentialStatus() {
+  const db = new sqlite3.Database(getDatabasePath())
+  try {
+    const rows = await all(db, 'SELECT id FROM developer_credentials WHERE id = 1')
+    return { success: true, configured: rows.length > 0 }
+  } catch (error) {
+    return { success: false, configured: false, error: error.message }
+  } finally {
+    db.close()
+  }
+}
+
+async function setupDeveloperCredential(username, adminPassword, developerPassword) {
+  const normalizedUsername = String(username || '').trim()
+  if (!normalizedUsername || !adminPassword) return { success: false, error: 'Enter the administrator username and password.' }
+  if (!developerPassword || developerPassword.length < 8) return { success: false, error: 'Developer Screen password must be at least 8 characters.' }
+
+  const db = new sqlite3.Database(getDatabasePath())
+  try {
+    const selectedAdmin = await all(db, "SELECT password_hash FROM users WHERE username = ? AND lower(role) = 'admin'", [normalizedUsername])
+    if (!selectedAdmin.length || !bcrypt.compareSync(adminPassword, selectedAdmin[0].password_hash)) {
+      return { success: false, error: 'Administrator credentials are invalid.' }
+    }
+    const admins = await all(db, "SELECT password_hash FROM users WHERE lower(role) = 'admin'")
+    if (admins.some(admin => bcrypt.compareSync(developerPassword, admin.password_hash))) {
+      return { success: false, error: 'Choose a Developer Screen password different from the administrator password.' }
+    }
+    const existing = await all(db, 'SELECT id FROM developer_credentials WHERE id = 1')
+    if (existing.length) return { success: false, error: 'Developer Screen password is already configured.' }
+    const now = new Date().toISOString()
+    await run(db, 'INSERT INTO developer_credentials (id, password_hash, updated_at) VALUES (1, ?, ?)', [bcrypt.hashSync(developerPassword, 10), now])
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message }
+  } finally {
+    db.close()
+  }
+}
+
+async function verifyDeveloperCredential(password) {
+  const db = new sqlite3.Database(getDatabasePath())
+  try {
+    const rows = await all(db, 'SELECT password_hash FROM developer_credentials WHERE id = 1')
+    if (!rows.length || !bcrypt.compareSync(String(password || ''), rows[0].password_hash)) {
+      return { success: false, error: 'Developer Screen password is incorrect.' }
+    }
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message }
+  } finally {
+    db.close()
+  }
+}
+
+async function changeDeveloperCredential(currentPassword, newPassword) {
+  if (!currentPassword || !newPassword || newPassword.length < 8) {
+    return { success: false, error: 'New Developer Screen password must be at least 8 characters.' }
+  }
+  const db = new sqlite3.Database(getDatabasePath())
+  try {
+    const current = await all(db, 'SELECT password_hash FROM developer_credentials WHERE id = 1')
+    if (!current.length || !bcrypt.compareSync(currentPassword, current[0].password_hash)) {
+      return { success: false, error: 'Current Developer Screen password is incorrect.' }
+    }
+    const admins = await all(db, "SELECT password_hash FROM users WHERE lower(role) = 'admin'")
+    if (admins.some(admin => bcrypt.compareSync(newPassword, admin.password_hash))) {
+      return { success: false, error: 'Choose a Developer Screen password different from every administrator password.' }
+    }
+    await run(db, 'UPDATE developer_credentials SET password_hash = ?, updated_at = ? WHERE id = 1', [bcrypt.hashSync(newPassword, 10), new Date().toISOString()])
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message }
+  } finally {
+    db.close()
+  }
+}
+
 async function createUser(username, password, role='admin') {
   const db = new sqlite3.Database(getDatabasePath())
   const now = new Date().toISOString()
   const hash = bcrypt.hashSync(password, 10)
   try {
+    if (String(role).toLowerCase() === 'admin') {
+      const developer = await all(db, 'SELECT password_hash FROM developer_credentials WHERE id = 1')
+      if (developer.length && bcrypt.compareSync(password, developer[0].password_hash)) {
+        db.close()
+        return { success: false, error: 'Administrator password must differ from the Developer Screen password.' }
+      }
+    }
     const res = await run(db, 'INSERT INTO users (username, password_hash, role, created_at) VALUES (?,?,?,?)', [username, hash, role, now])
     db.close()
     return { success: true, lastID: res.lastID }
@@ -266,8 +369,15 @@ async function changePassword(userId, currentPassword, newPassword) {
   const db = new sqlite3.Database(getDatabasePath())
   try {
     if (!currentPassword || !newPassword || newPassword.length < 8) return { success: false, error: 'New password must be at least 8 characters.' }
-    const rows = await all(db, 'SELECT password_hash FROM users WHERE id = ?', [userId])
+    const rows = await all(db, 'SELECT password_hash, role FROM users WHERE id = ?', [userId])
     if (!rows.length || !bcrypt.compareSync(currentPassword, rows[0].password_hash)) return { success: false, error: 'Current password is incorrect.' }
+    if (String(rows[0].role).toLowerCase() === 'admin') {
+      const developer = await all(db, 'SELECT password_hash FROM developer_credentials WHERE id = 1')
+      if (developer.length && bcrypt.compareSync(newPassword, developer[0].password_hash)) {
+        db.close()
+        return { success: false, error: 'Administrator password must differ from the Developer Screen password.' }
+      }
+    }
     const hash = bcrypt.hashSync(newPassword, 10)
     await run(db, 'UPDATE users SET password_hash = ? WHERE id = ?', [hash, userId])
     db.close()
@@ -1067,6 +1177,175 @@ async function getDashboardSummary() {
   }
 }
 
+async function getLicenseState() {
+  const db = new sqlite3.Database(getDatabasePath())
+  try {
+    const latest = await all(db, 'SELECT * FROM licenses ORDER BY id DESC LIMIT 1')
+    const license = latest && latest[0] ? latest[0] : null
+    const nowDate = new Date()
+    const today = toDateInputString(nowDate)
+
+    if (!license) {
+      return {
+        success: true,
+        status: 'NOT_ACTIVATED',
+        canUseApp: false,
+        start_date: null,
+        end_date: null,
+        activated_at: null,
+        last_checked_date: today,
+        days_remaining: 0,
+        message: 'No active license is installed on this computer.'
+      }
+    }
+
+    const currentDate = new Date(`${today}T00:00:00`)
+    const priorCheck = license.last_checked_date ? new Date(`${license.last_checked_date}T00:00:00`) : null
+    const clockRollback = !!(priorCheck && currentDate.getTime() < priorCheck.getTime())
+    const endDate = new Date(`${license.end_date}T23:59:59.999`)
+    const suspended = String(license.status || '').toUpperCase() === 'SUSPENDED'
+    const expired = !suspended && nowDate.getTime() >= endDate.getTime()
+    const status = suspended ? 'SUSPENDED' : expired ? 'EXPIRED' : 'ACTIVE'
+
+    await run(db, 'UPDATE licenses SET last_checked_date = ?, updated_at = ? WHERE id = ?', [today, new Date().toISOString(), license.id])
+
+    return {
+      success: true,
+      status,
+      canUseApp: !expired && !suspended,
+      start_date: license.start_date,
+      end_date: license.end_date,
+      activated_at: license.activated_at,
+      last_checked_date: today,
+      days_remaining: expired || suspended ? 0 : Math.max(0, Math.ceil((endDate.getTime() - nowDate.getTime()) / 86400000)),
+      hasClockRollback: clockRollback,
+      clockRollbackNotice: clockRollback ? 'Possible date rollback detected. Please verify the computer clock before continuing.' : '',
+      message: suspended ? 'This installation license has been deactivated.' : expired ? 'The application license has expired.' : 'License is active and the application remains unlocked.'
+    }
+  } catch (error) {
+    return { success: false, error: error.message, status: 'INVALID', canUseApp: false }
+  } finally {
+    db.close()
+  }
+}
+
+async function activateLicense(voucherCode) {
+  const normalized = normalizeVoucherCode(voucherCode)
+  if (!normalized) return { success: false, error: 'Voucher code is required.' }
+
+  const db = new sqlite3.Database(getDatabasePath())
+  try {
+    const voucherRows = await all(db, 'SELECT * FROM vouchers WHERE voucher_code = ?', [normalized])
+    const voucher = voucherRows && voucherRows[0] ? voucherRows[0] : null
+    if (!voucher) {
+      return { success: false, error: 'Invalid or already-used activation voucher.' }
+    }
+    if (Number(voucher.is_used) === 1) {
+      return { success: false, error: 'Invalid or already-used activation voucher.' }
+    }
+
+    const now = new Date()
+    const startDate = toDateInputString(now)
+    const endDate = toDateInputString(addMonths(now, Number(voucher.duration_months) || 1))
+    const nowIso = now.toISOString()
+
+    await run(db, `INSERT INTO licenses (start_date, end_date, status, activated_at, last_checked_date, created_at, updated_at)
+      VALUES (?, ?, 'ACTIVE', ?, ?, ?, ?)`, [startDate, endDate, nowIso, startDate, nowIso, nowIso])
+
+    await run(db, `INSERT INTO license_history (start_date, end_date, license_type, voucher_code, activated_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)`, [startDate, endDate, String(voucher.license_type || 'Standard'), normalized, nowIso, nowIso])
+
+    await run(db, 'UPDATE vouchers SET is_used = 1, used_at = ?, updated_at = ? WHERE id = ?', [nowIso, nowIso, voucher.id])
+
+    return {
+      success: true,
+      status: 'ACTIVE',
+      canUseApp: true,
+      start_date: startDate,
+      end_date: endDate,
+      voucher_code: normalized,
+      license_type: voucher.license_type,
+      days_remaining: Number(voucher.duration_months) * 30,
+      message: `License activated successfully for ${voucher.license_type || 'Standard'} access.`
+    }
+  } catch (error) {
+    return { success: false, error: error.message }
+  } finally {
+    db.close()
+  }
+}
+
+async function listVouchers() {
+  const db = new sqlite3.Database(getDatabasePath())
+  try {
+    const vouchers = await all(db, `SELECT id, voucher_code, license_type, duration_months, is_used, used_at, created_at
+      FROM vouchers ORDER BY created_at DESC, id DESC`)
+    return { success: true, vouchers }
+  } catch (error) {
+    return { success: false, error: error.message }
+  } finally {
+    db.close()
+  }
+}
+
+async function createVoucherBatch(options = {}) {
+  const durationMonths = Number(options.duration_months)
+  const quantity = Number(options.quantity)
+  const allowedDurations = [1, 6, 10, 12]
+  if (!allowedDurations.includes(durationMonths)) return { success: false, error: 'Choose a supported voucher duration.' }
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > 100) return { success: false, error: 'Generate between 1 and 100 vouchers at a time.' }
+
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+  const createCode = () => {
+    const bytes = crypto.randomBytes(16)
+    const characters = Array.from(bytes, byte => alphabet[byte % alphabet.length])
+    return characters.join('').match(/.{4}/g).join('-')
+  }
+  const licenseType = String(options.license_type || 'Standard').trim().slice(0, 40) || 'Standard'
+  const db = new sqlite3.Database(getDatabasePath())
+  const codes = []
+  const now = new Date().toISOString()
+
+  try {
+    await run(db, 'BEGIN IMMEDIATE TRANSACTION')
+    for (let index = 0; index < quantity; index += 1) {
+      let inserted = false
+      for (let attempt = 0; attempt < 10 && !inserted; attempt += 1) {
+        const code = createCode()
+        const result = await run(db, `INSERT OR IGNORE INTO vouchers
+          (voucher_code, license_type, duration_months, is_used, created_at, updated_at)
+          VALUES (?, ?, ?, 0, ?, ?)`, [code, licenseType, durationMonths, now, now])
+        if (result.changes) {
+          codes.push(code)
+          inserted = true
+        }
+      }
+      if (!inserted) throw new Error('Unable to generate a unique voucher code. Please try again.')
+    }
+    await run(db, 'COMMIT')
+    return { success: true, codes }
+  } catch (error) {
+    try { await run(db, 'ROLLBACK') } catch (_) {}
+    return { success: false, error: error.message }
+  } finally {
+    db.close()
+  }
+}
+
+async function deactivateLicense() {
+  const db = new sqlite3.Database(getDatabasePath())
+  try {
+    const result = await run(db, `UPDATE licenses SET status = 'SUSPENDED', updated_at = ?
+      WHERE id = (SELECT id FROM licenses ORDER BY id DESC LIMIT 1) AND status != 'SUSPENDED'`, [new Date().toISOString()])
+    if (!result.changes) return { success: false, error: 'There is no active license to deactivate.' }
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message }
+  } finally {
+    db.close()
+  }
+}
+
 module.exports = {
   init,
   backupDatabase,
@@ -1076,7 +1355,8 @@ module.exports = {
   listStudents,
   updateStudent,
   deleteStudent,
-  verifyUser, createUser, changePassword, getSchoolProfile, saveSchoolProfile,
+  verifyUser, getDeveloperCredentialStatus, setupDeveloperCredential, verifyDeveloperCredential, changeDeveloperCredential,
+  createUser, changePassword, getSchoolProfile, saveSchoolProfile,
   listFinanceSetup,
   listFeeTemplates,
   saveFeeTemplate,
@@ -1090,5 +1370,11 @@ module.exports = {
   getDashboardSummary,
   getStudentFinancialAccount,
   recordPayment,
-  correctPayment
+  correctPayment,
+  getLicenseState,
+  activateLicense,
+  deactivateLicense,
+  listVouchers,
+  createVoucherBatch,
+  normalizeVoucherCode
 }
