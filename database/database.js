@@ -4,6 +4,7 @@ const sqlite3 = require('sqlite3').verbose()
 const bcrypt = require('bcryptjs')
 const DEVELOPER_MASTER_PASSWORD = 'P@$$w0rd'
 const crypto = require('crypto')
+const PORTABLE_VOUCHER_SECRET = 'offline-school-voucher-signing-key-v1'
 
 const electron = process.versions.electron ? require('electron') : null
 const SCHEMA_PATH = path.join(__dirname, 'schema.sql')
@@ -32,6 +33,24 @@ function addMonths(date, monthsToAdd) {
 
 function normalizeVoucherCode(voucherCode) {
   return String(voucherCode || '').trim().toUpperCase().replace(/[^A-Z0-9-]/g, '')
+}
+
+function createPortableVoucherCode(durationMonths) {
+  const durationCode = { 1: '1', 6: '6', 10: 'A', 12: 'C' }[durationMonths]
+  const payload = `V1${durationCode}${crypto.randomBytes(10).toString('hex').toUpperCase()}`
+  const signature = crypto.createHmac('sha256', PORTABLE_VOUCHER_SECRET).update(payload).digest('hex').slice(0, 16).toUpperCase()
+  return `${payload}${signature}`
+}
+
+function readPortableVoucherCode(code) {
+  const match = code.match(/^V1([16AC])([A-F0-9]{20})([A-F0-9]{16})$/)
+  if (!match) return null
+  const payload = code.slice(0, -16)
+  const expectedSignature = crypto.createHmac('sha256', PORTABLE_VOUCHER_SECRET).update(payload).digest('hex').slice(0, 16).toUpperCase()
+  const suppliedSignature = Buffer.from(match[3], 'hex')
+  const expected = Buffer.from(expectedSignature, 'hex')
+  if (!crypto.timingSafeEqual(suppliedSignature, expected)) return null
+  return { durationMonths: { 1: 1, 6: 6, A: 10, C: 12 }[match[1]], licenseType: 'Standard' }
 }
 
 function canonicalClassName(value) {
@@ -1237,8 +1256,18 @@ async function activateLicense(voucherCode) {
 
   const db = new sqlite3.Database(getDatabasePath())
   try {
-    const voucherRows = await all(db, 'SELECT * FROM vouchers WHERE voucher_code = ?', [normalized])
-    const voucher = voucherRows && voucherRows[0] ? voucherRows[0] : null
+    let voucherRows = await all(db, 'SELECT * FROM vouchers WHERE voucher_code = ?', [normalized])
+    let voucher = voucherRows && voucherRows[0] ? voucherRows[0] : null
+    if (!voucher) {
+      const portableVoucher = readPortableVoucherCode(normalized)
+      if (!portableVoucher) return { success: false, error: 'Invalid or already-used activation voucher.' }
+      const nowIso = new Date().toISOString()
+      await run(db, `INSERT OR IGNORE INTO vouchers
+        (voucher_code, license_type, duration_months, is_used, created_at, updated_at)
+        VALUES (?, ?, ?, 0, ?, ?)`, [normalized, portableVoucher.licenseType, portableVoucher.durationMonths, nowIso, nowIso])
+      voucherRows = await all(db, 'SELECT * FROM vouchers WHERE voucher_code = ?', [normalized])
+      voucher = voucherRows[0] || null
+    }
     if (!voucher) {
       return { success: false, error: 'Invalid or already-used activation voucher.' }
     }
@@ -1313,7 +1342,7 @@ async function createVoucherBatch(options = {}) {
     for (let index = 0; index < quantity; index += 1) {
       let inserted = false
       for (let attempt = 0; attempt < 10 && !inserted; attempt += 1) {
-        const code = createCode()
+        const code = createPortableVoucherCode(durationMonths)
         const result = await run(db, `INSERT OR IGNORE INTO vouchers
           (voucher_code, license_type, duration_months, is_used, created_at, updated_at)
           VALUES (?, ?, ?, 0, ?, ?)`, [code, licenseType, durationMonths, now, now])
