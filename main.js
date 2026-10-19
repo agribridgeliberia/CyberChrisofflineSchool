@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } = require('electron')
 const fs = require('fs/promises')
 const path = require('path')
 const db = require(path.join(__dirname, 'database', 'database.js'))
@@ -13,6 +13,12 @@ async function requireActiveLicense() {
     return { success: false, error: 'Application license is expired or inactive.', status: state || { status: 'NOT_ACTIVATED', canUseApp: false } }
   }
   return { success: true, status: state }
+}
+
+async function runLicensedOperation(operation) {
+  const licenseGuard = await requireActiveLicense()
+  if (!licenseGuard.success) return { ...licenseGuard, licenseBlocked: true }
+  return operation()
 }
 
 function createWindow() {
@@ -32,16 +38,21 @@ function createWindow() {
   win.loadFile(path.join(__dirname, 'src', 'index.html'))
 }
 
-// Enable live reload in development when electron-reload is available
-try {
-  // Watch source files without reloading when SQLite changes during form saves.
-  require('electron-reload')(__dirname, {
-    electron: require(path.join(__dirname, 'node_modules', 'electron')),
-    ignored: /database[\\/]|school\.db/
-  })
-  console.log('[DEV] electron-reload enabled')
-} catch (e) {
-  // ignore if not installed in production
+function getRememberedLoginPath() {
+  return path.join(app.getPath('userData'), 'remembered-login.json')
+}
+
+if (!app.isPackaged) {
+  try {
+    // Watch source files without reloading when SQLite changes during form saves.
+    require('electron-reload')(__dirname, {
+      electron: require(path.join(__dirname, 'node_modules', 'electron')),
+      ignored: /(?:^|[\\/])(?:dist(?:-[^\\/]+)?|release)(?:[\\/]|$)|database[\\/]|school\.db/
+    })
+    console.log('[DEV] electron-reload enabled')
+  } catch (e) {
+    // ignore if not installed in production
+  }
 }
 
 app.whenReady().then(async () => {
@@ -63,6 +74,15 @@ ipcMain.handle('db-init', async () => {
 
 ipcMain.handle('license-check', async () => {
   return db.getLicenseState()
+})
+
+ipcMain.handle('open-whatsapp-contact', async () => {
+  try {
+    await shell.openExternal('https://wa.me/231555637569')
+    return { success: true }
+  } catch (error) {
+    return { success: false }
+  }
 })
 
 ipcMain.handle('license-activate', async (event, voucherCode) => {
@@ -151,6 +171,44 @@ ipcMain.handle('auth-me', async () => {
   return { user: currentUser }
 })
 
+ipcMain.handle('auth-remembered-login-get', async () => {
+  if (!safeStorage.isEncryptionAvailable()) return { success: false, error: 'Secure credential storage is unavailable.' }
+  try {
+    const saved = JSON.parse(await fs.readFile(getRememberedLoginPath(), 'utf8'))
+    const username = String(saved.username || '')
+    const encryptedPassword = Buffer.from(String(saved.encryptedPassword || ''), 'base64')
+    if (!username || !encryptedPassword.length) return { success: false, error: 'Saved login is incomplete.' }
+    return { success: true, username, password: safeStorage.decryptString(encryptedPassword) }
+  } catch (error) {
+    if (error.code === 'ENOENT') return { success: true, username: '', password: '' }
+    return { success: false, error: 'Saved login could not be read securely.' }
+  }
+})
+
+ipcMain.handle('auth-remembered-login-save', async (_event, credentials = {}) => {
+  if (!safeStorage.isEncryptionAvailable()) return { success: false, error: 'Secure credential storage is unavailable on this computer.' }
+  const username = String(credentials.username || '').trim()
+  const password = String(credentials.password || '')
+  if (!username || !password) return { success: false, error: 'A username and password are required to remember this login.' }
+  try {
+    const encryptedPassword = safeStorage.encryptString(password).toString('base64')
+    await fs.writeFile(getRememberedLoginPath(), JSON.stringify({ username, encryptedPassword }), { encoding: 'utf8', mode: 0o600 })
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: 'Saved login could not be stored securely.' }
+  }
+})
+
+ipcMain.handle('auth-remembered-login-clear', async () => {
+  try {
+    await fs.unlink(getRememberedLoginPath())
+    return { success: true }
+  } catch (error) {
+    if (error.code === 'ENOENT') return { success: true }
+    return { success: false, error: 'Saved login could not be removed.' }
+  }
+})
+
 ipcMain.handle('generate-student-id', async (event, academicYear) => {
   return db.generateStudentId(academicYear)
 })
@@ -182,6 +240,16 @@ ipcMain.handle('student-delete', async (event, studentId) => {
   }
   return db.deleteStudent(studentId)
 })
+
+ipcMain.handle('academic-classes-list', async () => db.listAcademicClasses(true))
+ipcMain.handle('academic-class-save', async (_event, classData) => runLicensedOperation(() => db.saveAcademicClass(classData)))
+ipcMain.handle('academic-class-delete', async (_event, classId) => runLicensedOperation(() => db.deleteAcademicClass(classId)))
+ipcMain.handle('academic-subjects-list', async () => db.listSubjects(true))
+ipcMain.handle('academic-subject-save', async (_event, subject) => runLicensedOperation(() => db.saveSubject(subject)))
+ipcMain.handle('academic-subject-delete', async (_event, subjectId) => runLicensedOperation(() => db.deleteSubject(subjectId)))
+ipcMain.handle('academic-teachers-list', async () => db.listTeachers(''))
+ipcMain.handle('academic-teacher-save', async (_event, teacher) => runLicensedOperation(() => db.saveTeacher(teacher)))
+ipcMain.handle('academic-teacher-delete', async (_event, teacherId) => runLicensedOperation(() => db.deleteTeacher(teacherId)))
 
 ipcMain.handle('finance-setup-list', async () => {
   return db.listFinanceSetup()

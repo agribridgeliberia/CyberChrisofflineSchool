@@ -1,6 +1,6 @@
 {
   "name": "school-management-system",
-  "version": "3.0.0",
+  "version": "4.1.0",
   "description": "CyberChris Offline School - School Management System",
   "author": "CyberChris Offline School <christianpablahbaker@gmail.com>",
   "main": "main.js",
@@ -28,13 +28,16 @@
     "npmRebuild": false,
 
     "directories": {
-      "output": "dist",
+      "output": "dist-build",
       "buildResources": "build"
     },
 
     "files": [
       "**/*",
-      "!dist/**"
+      "!dist/**",
+      "!dist-build/**",
+      "!dist-*/**",
+      "!release/**"
     ],
 
     "win": {

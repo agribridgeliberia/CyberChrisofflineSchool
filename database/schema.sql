@@ -96,7 +96,11 @@ CREATE TABLE IF NOT EXISTS academic_years (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
   is_current INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL
+  starts_on TEXT,
+  ends_on TEXT,
+  status TEXT NOT NULL DEFAULT 'UPCOMING' CHECK (status IN ('CURRENT', 'UPCOMING', 'CLOSED')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS semesters (
@@ -114,7 +118,113 @@ CREATE TABLE IF NOT EXISTS classes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
   is_active INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  next_class_name TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS student_enrollments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  student_id TEXT NOT NULL,
+  academic_year_id INTEGER NOT NULL,
+  class_name TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'PROMOTED', 'RETAINED', 'FAILED', 'TRANSFERRED', 'WITHDRAWN')),
+  decision TEXT NOT NULL DEFAULT 'ENROLLED',
+  notes TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (student_id, academic_year_id),
+  FOREIGN KEY (student_id) REFERENCES students(student_id),
+  FOREIGN KEY (academic_year_id) REFERENCES academic_years(id),
+  FOREIGN KEY (class_name) REFERENCES classes(name)
+);
+
+CREATE TABLE IF NOT EXISTS promotion_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  student_id TEXT NOT NULL,
+  from_academic_year_id INTEGER NOT NULL,
+  to_academic_year_id INTEGER NOT NULL,
+  from_class_name TEXT NOT NULL,
+  to_class_name TEXT NOT NULL,
+  outcome TEXT NOT NULL CHECK (outcome IN ('PROMOTED', 'RETAINED', 'FAILED', 'TRANSFERRED', 'WITHDRAWN')),
+  notes TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (student_id) REFERENCES students(student_id),
+  FOREIGN KEY (from_academic_year_id) REFERENCES academic_years(id),
+  FOREIGN KEY (to_academic_year_id) REFERENCES academic_years(id)
+);
+
+CREATE TABLE IF NOT EXISTS teachers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  teacher_id TEXT NOT NULL UNIQUE,
+  full_name TEXT NOT NULL,
+  photo_data TEXT,
+  gender TEXT,
+  phone TEXT,
+  email TEXT,
+  address TEXT,
+  qualification TEXT,
+  specialization TEXT,
+  employment_status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (employment_status IN ('ACTIVE', 'INACTIVE')),
+  date_employed TEXT,
+  notes TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS subjects (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  short_code TEXT NOT NULL UNIQUE,
+  description TEXT,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS teacher_subjects (
+  teacher_id TEXT NOT NULL,
+  subject_id INTEGER NOT NULL,
+  PRIMARY KEY (teacher_id, subject_id),
+  FOREIGN KEY (teacher_id) REFERENCES teachers(teacher_id),
+  FOREIGN KEY (subject_id) REFERENCES subjects(id)
+);
+
+CREATE TABLE IF NOT EXISTS timetable_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  academic_year_id INTEGER NOT NULL,
+  class_name TEXT NOT NULL,
+  day_of_week INTEGER NOT NULL CHECK (day_of_week BETWEEN 1 AND 5),
+  period_number INTEGER NOT NULL CHECK (period_number > 0),
+  start_time TEXT NOT NULL,
+  end_time TEXT NOT NULL,
+  subject_id INTEGER NOT NULL,
+  teacher_id TEXT NOT NULL,
+  room TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (academic_year_id) REFERENCES academic_years(id),
+  FOREIGN KEY (class_name) REFERENCES classes(name),
+  FOREIGN KEY (subject_id) REFERENCES subjects(id),
+  FOREIGN KEY (teacher_id) REFERENCES teachers(teacher_id)
+);
+
+CREATE TABLE IF NOT EXISTS calendar_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  academic_year_id INTEGER,
+  title TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'Other',
+  starts_on TEXT NOT NULL,
+  ends_on TEXT NOT NULL,
+  start_time TEXT,
+  end_time TEXT,
+  location TEXT,
+  description TEXT,
+  status TEXT NOT NULL DEFAULT 'SCHEDULED' CHECK (status IN ('SCHEDULED', 'CANCELLED')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (academic_year_id) REFERENCES academic_years(id)
 );
 
 CREATE TABLE IF NOT EXISTS fee_groups (
@@ -206,6 +316,7 @@ CREATE TABLE IF NOT EXISTS student_accounts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   student_id TEXT NOT NULL,
   academic_year_id INTEGER NOT NULL,
+  class_name TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   UNIQUE (student_id, academic_year_id),
   FOREIGN KEY (student_id) REFERENCES students(student_id) ON DELETE CASCADE,
@@ -276,6 +387,14 @@ CREATE INDEX IF NOT EXISTS idx_semesters_year ON semesters(academic_year_id);
 CREATE INDEX IF NOT EXISTS idx_fee_structures_year_group ON fee_structures(academic_year_id, fee_group_id);
 CREATE INDEX IF NOT EXISTS idx_schedules_year_group ON payment_schedules(academic_year_id, fee_group_id);
 CREATE INDEX IF NOT EXISTS idx_accounts_student ON student_accounts(student_id);
+CREATE INDEX IF NOT EXISTS idx_enrollments_year_class ON student_enrollments(academic_year_id, class_name, status);
+CREATE INDEX IF NOT EXISTS idx_enrollments_student ON student_enrollments(student_id, academic_year_id);
+CREATE INDEX IF NOT EXISTS idx_promotions_student ON promotion_history(student_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_teachers_name ON teachers(full_name);
+CREATE INDEX IF NOT EXISTS idx_subjects_name ON subjects(name);
+CREATE INDEX IF NOT EXISTS idx_timetable_lookup ON timetable_entries(academic_year_id, day_of_week, period_number, class_name);
+CREATE INDEX IF NOT EXISTS idx_timetable_teacher ON timetable_entries(academic_year_id, teacher_id, day_of_week, period_number);
+CREATE INDEX IF NOT EXISTS idx_calendar_dates ON calendar_events(starts_on, ends_on, status);
 CREATE INDEX IF NOT EXISTS idx_obligations_account ON student_obligations(account_id);
 CREATE INDEX IF NOT EXISTS idx_payments_account_date ON payments(account_id, payment_date);
 CREATE INDEX IF NOT EXISTS idx_payments_status_date ON payments(status, payment_date);

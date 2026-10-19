@@ -8,7 +8,7 @@ const PORTABLE_VOUCHER_SECRET = 'offline-school-voucher-signing-key-v1'
 
 const electron = process.versions.electron ? require('electron') : null
 const SCHEMA_PATH = path.join(__dirname, 'schema.sql')
-const OPERATIONAL_TABLES = ['students', 'academic_years', 'semesters', 'classes', 'student_accounts', 'student_obligations', 'payments', 'expenses', 'fee_templates', 'fee_template_phases', 'fee_template_items']
+const OPERATIONAL_TABLES = ['students', 'academic_years', 'classes', 'semesters', 'teachers', 'subjects', 'teacher_subjects', 'student_enrollments', 'promotion_history', 'timetable_entries', 'calendar_events', 'student_accounts', 'student_obligations', 'payments', 'expenses', 'fee_templates', 'fee_template_phases', 'fee_template_items']
 const CONFIGURATION_TABLES = ['users', 'school_profile', 'audit_logs', 'expense_categories', 'fee_types', 'fee_groups', 'class_fee_groups', 'fee_structures', 'payment_schedules']
 
 function getDatabasePath() {
@@ -99,8 +99,9 @@ async function restoreDatabase(source) {
     if (path.resolve(source) === path.resolve(target)) throw new Error('Choose an operational records backup, not the currently open database.')
     backupDb = new sqlite3.Database(source)
     const manifest = await all(backupDb, 'SELECT table_name, schema_sql FROM backup_manifest')
-    if (!manifest.length || manifest.some(row => !OPERATIONAL_TABLES.includes(row.table_name))) throw new Error('Invalid backup: operational table manifest is missing or contains unauthorized tables.')
-    for (const table of OPERATIONAL_TABLES) {
+    const sourceTables = new Set(manifest.map(row => row.table_name))
+    if (!manifest.length || !sourceTables.has('students') || manifest.some(row => !OPERATIONAL_TABLES.includes(row.table_name))) throw new Error('Invalid backup: operational table manifest is missing, incomplete, or contains unauthorized tables.')
+    for (const table of sourceTables) {
       const exists = await all(backupDb, "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", [table])
       if (!exists.length) throw new Error(`Invalid backup: required table ${table} is missing.`)
     }
@@ -111,12 +112,11 @@ async function restoreDatabase(source) {
     await closeDatabase(backupDb)
     backupDb = null
     await run(db, `ATTACH DATABASE ? AS backup`, [source])
-    const sourceTables = new Set(manifest.map(row => row.table_name))
     const restoreColumns = new Map()
     for (const table of OPERATIONAL_TABLES) {
+      if (!sourceTables.has(table)) continue
       const sourceColumns = await all(db, `PRAGMA backup.table_info(${table})`)
       const targetColumns = await all(db, `PRAGMA main.table_info(${table})`)
-      if (!sourceTables.has(table)) throw new Error(`Invalid backup: required table ${table} is missing.`)
       const sourceNames = new Set(sourceColumns.map(column => column.name))
       const sharedColumns = targetColumns.filter(column => sourceNames.has(column.name))
       const missingRequired = targetColumns.find(column =>
@@ -132,6 +132,7 @@ async function restoreDatabase(source) {
     await run(db, 'BEGIN IMMEDIATE TRANSACTION')
     for (const table of [...OPERATIONAL_TABLES].reverse()) await run(db, `DELETE FROM ${table}`)
     for (const table of OPERATIONAL_TABLES) {
+      if (!sourceTables.has(table)) continue
       const names = restoreColumns.get(table).map(name => `"${name.replace(/"/g, '""')}"`).join(', ')
       await run(db, `INSERT INTO ${table} (${names}) SELECT ${names} FROM backup.${table}`)
     }
@@ -140,7 +141,7 @@ async function restoreDatabase(source) {
     if (!currentIntegrity.length || currentIntegrity[0].integrity_check !== 'ok') throw new Error('Restored records failed integrity validation.')
     await run(db, 'COMMIT')
     await run(db, 'DETACH DATABASE backup')
-    await closeDatabase(backupDb); await closeDatabase(db)
+    await closeDatabase(db)
     return { success: true, safetyBackup }
   } catch (err) {
     try { await run(db, 'ROLLBACK') } catch (_) {}
@@ -180,6 +181,17 @@ async function init() {
   await new Promise((resolve, reject) => {
     db.exec(schema, (err) => err ? reject(err) : resolve())
   })
+  const academicYearColumns = await all(db, 'PRAGMA table_info(academic_years)')
+  if (!academicYearColumns.some(column => column.name === 'starts_on')) await run(db, 'ALTER TABLE academic_years ADD COLUMN starts_on TEXT')
+  if (!academicYearColumns.some(column => column.name === 'ends_on')) await run(db, 'ALTER TABLE academic_years ADD COLUMN ends_on TEXT')
+  if (!academicYearColumns.some(column => column.name === 'status')) await run(db, "ALTER TABLE academic_years ADD COLUMN status TEXT NOT NULL DEFAULT 'UPCOMING'")
+  if (!academicYearColumns.some(column => column.name === 'updated_at')) await run(db, "ALTER TABLE academic_years ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
+  const classColumns = await all(db, 'PRAGMA table_info(classes)')
+  if (!classColumns.some(column => column.name === 'sort_order')) await run(db, 'ALTER TABLE classes ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0')
+  if (!classColumns.some(column => column.name === 'next_class_name')) await run(db, 'ALTER TABLE classes ADD COLUMN next_class_name TEXT')
+  if (!classColumns.some(column => column.name === 'updated_at')) await run(db, "ALTER TABLE classes ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
+  const accountColumns = await all(db, 'PRAGMA table_info(student_accounts)')
+  if (!accountColumns.some(column => column.name === 'class_name')) await run(db, "ALTER TABLE student_accounts ADD COLUMN class_name TEXT NOT NULL DEFAULT ''")
   const itemColumns = await all(db, 'PRAGMA table_info(fee_template_items)')
   if (!itemColumns.some(column => column.name === 'phase_id')) await run(db, 'ALTER TABLE fee_template_items ADD COLUMN phase_id INTEGER')
   const obligationColumns = await all(db, 'PRAGMA table_info(student_obligations)')
@@ -215,6 +227,39 @@ async function init() {
     const canonical = canonicalClassName(row.class_name)
     if (canonical && canonical !== row.class_name) await run(db, 'UPDATE fee_templates SET class_name = ? WHERE class_name = ?', [canonical, row.class_name])
   }
+  const now = new Date().toISOString()
+  await run(db, `INSERT OR IGNORE INTO academic_years (name, is_current, status, created_at, updated_at)
+    SELECT DISTINCT academic_year, 0, 'UPCOMING', ?, ? FROM students WHERE trim(academic_year) != ''`, [now, now])
+  await run(db, `INSERT OR IGNORE INTO classes (name, is_active, created_at, updated_at)
+    SELECT DISTINCT class_name, 1, ?, ? FROM students WHERE trim(class_name) != ''`, [now, now])
+  const currentYears = await all(db, 'SELECT id FROM academic_years WHERE is_current = 1 ORDER BY id DESC')
+  for (const year of currentYears.slice(1)) await run(db, 'UPDATE academic_years SET is_current = 0 WHERE id = ?', [year.id])
+  await run(db, `UPDATE academic_years SET
+    status = CASE WHEN is_current = 1 THEN 'CURRENT' WHEN status = 'CLOSED' THEN 'CLOSED' ELSE 'UPCOMING' END,
+    updated_at = CASE WHEN updated_at = '' THEN created_at ELSE updated_at END`)
+  await run(db, 'CREATE UNIQUE INDEX IF NOT EXISTS idx_academic_year_one_current ON academic_years(is_current) WHERE is_current = 1')
+  await run(db, 'UPDATE classes SET sort_order = id WHERE sort_order = 0')
+  await run(db, "UPDATE classes SET updated_at = created_at WHERE updated_at = ''")
+  const classesWithProgression = await all(db, 'SELECT COUNT(*) AS count FROM classes WHERE next_class_name IS NOT NULL')
+  if (classesWithProgression[0].count === 0) {
+    const orderedClasses = await all(db, 'SELECT name FROM classes ORDER BY sort_order, id')
+    for (let index = 0; index < orderedClasses.length; index += 1) {
+      await run(db, 'UPDATE classes SET next_class_name = ? WHERE name = ?', [orderedClasses[index + 1]?.name || null, orderedClasses[index].name])
+    }
+  }
+  await run(db, `UPDATE student_accounts SET class_name = (
+    SELECT students.class_name FROM students WHERE students.student_id = student_accounts.student_id
+  ) WHERE class_name = ''`)
+  await run(db, `INSERT OR IGNORE INTO student_enrollments
+    (student_id, academic_year_id, class_name, status, decision, created_at, updated_at)
+    SELECT student_accounts.student_id, student_accounts.academic_year_id, student_accounts.class_name,
+      'ACTIVE', 'ENROLLED', student_accounts.created_at, student_accounts.created_at
+    FROM student_accounts WHERE student_accounts.class_name != ''`)
+  await run(db, `INSERT OR IGNORE INTO student_enrollments
+    (student_id, academic_year_id, class_name, status, decision, created_at, updated_at)
+    SELECT students.student_id, academic_years.id, students.class_name, 'ACTIVE', 'ENROLLED',
+      students.created_at, students.updated_at
+    FROM students JOIN academic_years ON academic_years.name = students.academic_year`)
   const existingTemplates = await all(db, 'SELECT id FROM fee_templates')
   for (const template of existingTemplates) {
     await run(db, `INSERT OR IGNORE INTO fee_template_phases (template_id, phase, created_at, updated_at) VALUES (?, 'First Semester', ?, ?)`, [template.id, new Date().toISOString(), new Date().toISOString()])
@@ -469,6 +514,10 @@ async function addStudent(student) {
     const res = await run(db, sql, params)
     const accountResult = await ensureStudentAccount(db, student)
     if (!accountResult.created) throw new Error('Create a fee template for this class before registering the student.')
+    const yearRows = await all(db, 'SELECT id FROM academic_years WHERE name = ?', [student.academic_year])
+    await run(db, `INSERT OR IGNORE INTO student_enrollments
+      (student_id, academic_year_id, class_name, status, decision, created_at, updated_at)
+      VALUES (?, ?, ?, 'ACTIVE', 'ENROLLED', ?, ?)`, [student.student_id, yearRows[0].id, student.class_name, now, now])
     await run(db, 'COMMIT')
     db.close()
     return { success: true, lastID: res.lastID }
@@ -486,7 +535,7 @@ async function ensureStudentAccount(db, student) {
        OR replace(lower(trim(class_name)), 'grade ', '') = replace(lower(trim(?)), 'grade ', '')`, [student.class_name, student.class_name])
   if (!yearRows.length || !templateRows.length) return { created: false, reason: 'No configured academic year or class fee template' }
   const yearId = yearRows[0].id
-  await run(db, 'INSERT OR IGNORE INTO student_accounts (student_id, academic_year_id, created_at) VALUES (?,?,?)', [student.student_id, yearId, new Date().toISOString()])
+  await run(db, 'INSERT OR IGNORE INTO student_accounts (student_id, academic_year_id, class_name, created_at) VALUES (?,?,?,?)', [student.student_id, yearId, student.class_name, new Date().toISOString()])
   const accounts = await all(db, 'SELECT id FROM student_accounts WHERE student_id = ? AND academic_year_id = ?', [student.student_id, yearId])
   if (!accounts.length) return { created: false, reason: 'Account could not be created' }
   const obligationCount = await all(db, 'SELECT COUNT(*) AS count FROM student_obligations WHERE account_id = ?', [accounts[0].id])
@@ -512,9 +561,9 @@ async function syncExistingStudentAccounts(db) {
 async function getStudentFinancialAccount(studentId, academicYear) {
   const db = new sqlite3.Database(getDatabasePath())
   try {
-    let accountRows = await all(db, `SELECT student_accounts.id, student_accounts.student_id, student_accounts.academic_year_id, academic_years.name AS academic_year, students.full_name, students.class_name, students.gender, class_fee_groups.fee_group_id
+    let accountRows = await all(db, `SELECT student_accounts.id, student_accounts.student_id, student_accounts.academic_year_id, academic_years.name AS academic_year, students.full_name, student_accounts.class_name, students.gender, class_fee_groups.fee_group_id
       FROM student_accounts JOIN academic_years ON academic_years.id = student_accounts.academic_year_id JOIN students ON students.student_id = student_accounts.student_id
-      LEFT JOIN class_fee_groups ON class_fee_groups.class_name = students.class_name
+      LEFT JOIN class_fee_groups ON class_fee_groups.class_name = student_accounts.class_name
       WHERE student_accounts.student_id = ? AND academic_years.name = ?`, [studentId, academicYear])
     if (!accountRows.length) {
       const studentRows = await all(db, 'SELECT student_id, class_name, academic_year FROM students WHERE student_id = ?', [studentId])
@@ -526,9 +575,9 @@ async function getStudentFinancialAccount(studentId, academicYear) {
         db.close()
         return { success: false, error: `Financial account unavailable: ${accountResult.reason || `create a fee template for class ${student.class_name} first`}.` }
       }
-      accountRows = await all(db, `SELECT student_accounts.id, student_accounts.student_id, student_accounts.academic_year_id, academic_years.name AS academic_year, students.full_name, students.class_name, students.gender, class_fee_groups.fee_group_id
+      accountRows = await all(db, `SELECT student_accounts.id, student_accounts.student_id, student_accounts.academic_year_id, academic_years.name AS academic_year, students.full_name, student_accounts.class_name, students.gender, class_fee_groups.fee_group_id
         FROM student_accounts JOIN academic_years ON academic_years.id = student_accounts.academic_year_id JOIN students ON students.student_id = student_accounts.student_id
-        LEFT JOIN class_fee_groups ON class_fee_groups.class_name = students.class_name
+        LEFT JOIN class_fee_groups ON class_fee_groups.class_name = student_accounts.class_name
         WHERE student_accounts.student_id = ? AND academic_years.name = ?`, [studentId, academicYear])
     }
     const account = accountRows[0]
@@ -741,6 +790,511 @@ async function deleteStudent(studentId) {
   }
 }
 
+async function listAcademicYears() {
+  const db = new sqlite3.Database(getDatabasePath())
+  try {
+    return await all(db, `SELECT academic_years.*,
+      (SELECT COUNT(*) FROM student_enrollments WHERE academic_year_id = academic_years.id) AS enrollment_count
+      FROM academic_years ORDER BY COALESCE(starts_on, name) DESC, id DESC`)
+  } finally {
+    db.close()
+  }
+}
+
+async function saveAcademicYear(year = {}) {
+  const id = Number(year.id) || null
+  const name = String(year.name || '').trim()
+  const startsOn = String(year.starts_on || '').trim() || null
+  const endsOn = String(year.ends_on || '').trim() || null
+  if (!name || name.length > 40) return { success: false, error: 'Enter an academic year label of 40 characters or fewer.' }
+  if ((startsOn && !/^\d{4}-\d{2}-\d{2}$/.test(startsOn)) || (endsOn && !/^\d{4}-\d{2}-\d{2}$/.test(endsOn))) return { success: false, error: 'Enter valid academic year dates.' }
+  if (startsOn && endsOn && startsOn > endsOn) return { success: false, error: 'The end date must be on or after the start date.' }
+  const db = new sqlite3.Database(getDatabasePath())
+  const now = new Date().toISOString()
+  try {
+    if (id) {
+      const existing = await all(db, 'SELECT id, is_current, status FROM academic_years WHERE id = ?', [id])
+      if (!existing.length) throw new Error('Academic year not found.')
+      await run(db, `UPDATE academic_years SET name = ?, starts_on = ?, ends_on = ?, updated_at = ? WHERE id = ?`, [name, startsOn, endsOn, now, id])
+      if (existing[0].is_current) await run(db, "UPDATE academic_years SET status = 'CURRENT' WHERE id = ?", [id])
+    } else {
+      await run(db, `INSERT INTO academic_years (name, is_current, starts_on, ends_on, status, created_at, updated_at)
+        VALUES (?, 0, ?, ?, 'UPCOMING', ?, ?)`, [name, startsOn, endsOn, now, now])
+    }
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message.includes('UNIQUE') ? 'That academic year already exists.' : error.message }
+  } finally {
+    db.close()
+  }
+}
+
+async function setAcademicYearStatus(yearId, status) {
+  const id = Number(yearId)
+  const nextStatus = String(status || '').toUpperCase()
+  if (!Number.isInteger(id) || id < 1 || !['CURRENT', 'UPCOMING', 'CLOSED'].includes(nextStatus)) return { success: false, error: 'Select a valid academic year status.' }
+  const db = new sqlite3.Database(getDatabasePath())
+  try {
+    const years = await all(db, 'SELECT id, status FROM academic_years WHERE id = ?', [id])
+    if (!years.length) throw new Error('Academic year not found.')
+    if (years[0].status === 'CLOSED' && nextStatus !== 'CLOSED') throw new Error('A closed academic year cannot be reopened.')
+    await run(db, 'BEGIN IMMEDIATE TRANSACTION')
+    const now = new Date().toISOString()
+    if (nextStatus === 'CURRENT') {
+      await run(db, "UPDATE academic_years SET is_current = 0, status = 'UPCOMING', updated_at = ? WHERE is_current = 1", [now])
+      await run(db, "UPDATE academic_years SET is_current = 1, status = 'CURRENT', updated_at = ? WHERE id = ?", [now, id])
+    } else {
+      await run(db, 'UPDATE academic_years SET is_current = 0, status = ?, updated_at = ? WHERE id = ?', [nextStatus, now, id])
+    }
+    await run(db, 'COMMIT')
+    return { success: true }
+  } catch (error) {
+    try { await run(db, 'ROLLBACK') } catch (_) {}
+    return { success: false, error: error.message }
+  } finally {
+    db.close()
+  }
+}
+
+async function listAcademicClasses(includeInactive = false) {
+  const db = new sqlite3.Database(getDatabasePath())
+  try {
+    return await all(db, `SELECT classes.*,
+      (SELECT COUNT(*) FROM student_enrollments WHERE class_name = classes.name) AS enrollment_count
+      FROM classes ${includeInactive ? '' : 'WHERE is_active = 1'} ORDER BY sort_order, name COLLATE NOCASE`)
+  } finally {
+    db.close()
+  }
+}
+
+async function saveAcademicClass(classData = {}) {
+  const id = Number(classData.id) || null
+  const name = String(classData.name || '').trim()
+  const sortOrder = Number(classData.sort_order)
+  const nextClass = String(classData.next_class_name || '').trim() || null
+  if (!name || name.length > 60 || !Number.isInteger(sortOrder) || sortOrder < 0) return { success: false, error: 'Enter a class name and a nonnegative order.' }
+  const db = new sqlite3.Database(getDatabasePath())
+  try {
+    if (nextClass === name) throw new Error('A class cannot promote to itself.')
+    if (nextClass && !(await all(db, 'SELECT id FROM classes WHERE name = ? AND is_active = 1', [nextClass])).length) throw new Error('Choose an active next class.')
+    const now = new Date().toISOString()
+    if (id) {
+      const existing = await all(db, 'SELECT name FROM classes WHERE id = ?', [id])
+      if (!existing.length) throw new Error('Class not found.')
+      if (existing[0].name !== name) {
+        const counts = await all(db, `SELECT
+          (SELECT COUNT(*) FROM students WHERE class_name = ?) +
+          (SELECT COUNT(*) FROM student_accounts WHERE class_name = ?) +
+          (SELECT COUNT(*) FROM student_enrollments WHERE class_name = ?) +
+          (SELECT COUNT(*) FROM fee_templates WHERE class_name = ?) +
+          (SELECT COUNT(*) FROM timetable_entries WHERE class_name = ?) +
+          (SELECT COUNT(*) FROM promotion_history WHERE from_class_name = ? OR to_class_name = ?) AS total`,
+        [existing[0].name, existing[0].name, existing[0].name, existing[0].name, existing[0].name, existing[0].name, existing[0].name])
+        if (counts[0].total) throw new Error('This class has linked records. Deactivate it and create a replacement class instead of renaming it.')
+      }
+      await run(db, `UPDATE classes SET name = ?, is_active = ?, sort_order = ?, next_class_name = ?, updated_at = ? WHERE id = ?`, [name, classData.is_active === false ? 0 : 1, sortOrder, nextClass, now, id])
+      if (existing[0].name !== name) await run(db, 'UPDATE classes SET next_class_name = ? WHERE next_class_name = ? AND id != ?', [name, existing[0].name, id])
+    } else {
+      await run(db, `INSERT INTO classes (name, is_active, sort_order, next_class_name, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?)`, [name, classData.is_active === false ? 0 : 1, sortOrder, nextClass, now, now])
+    }
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message.includes('UNIQUE') ? 'That class name already exists.' : error.message }
+  } finally {
+    db.close()
+  }
+}
+
+async function deleteAcademicClass(classId) {
+  const id = Number(classId)
+  if (!Number.isInteger(id) || id < 1) return { success: false, error: 'Select a valid class.' }
+  const db = new sqlite3.Database(getDatabasePath())
+  try {
+    await run(db, 'BEGIN IMMEDIATE TRANSACTION')
+    const classes = await all(db, 'SELECT name FROM classes WHERE id = ?', [id])
+    if (!classes.length) throw new Error('Class not found.')
+    const name = classes[0].name
+    const references = await all(db, `SELECT
+      (SELECT COUNT(*) FROM students WHERE class_name = ?) +
+      (SELECT COUNT(*) FROM student_accounts WHERE class_name = ?) +
+      (SELECT COUNT(*) FROM student_enrollments WHERE class_name = ?) +
+      (SELECT COUNT(*) FROM fee_templates WHERE class_name = ?) +
+      (SELECT COUNT(*) FROM timetable_entries WHERE class_name = ?) +
+      (SELECT COUNT(*) FROM promotion_history WHERE from_class_name = ? OR to_class_name = ?) AS total`,
+    [name, name, name, name, name, name, name])
+    if (references[0].total) throw new Error('This class has linked records and cannot be deleted. Deactivate it instead.')
+    await run(db, 'UPDATE classes SET next_class_name = NULL WHERE next_class_name = ?', [name])
+    await run(db, 'DELETE FROM classes WHERE id = ?', [id])
+    await run(db, 'COMMIT')
+    return { success: true }
+  } catch (error) {
+    try { await run(db, 'ROLLBACK') } catch (_) {}
+    return { success: false, error: error.message }
+  } finally {
+    db.close()
+  }
+}
+
+async function getEnrollmentRoster(academicYearId, className = '') {
+  const id = Number(academicYearId)
+  if (!Number.isInteger(id) || id < 1) return { success: false, error: 'Select an academic year.', students: [] }
+  const db = new sqlite3.Database(getDatabasePath())
+  try {
+    const students = await all(db, `SELECT student_enrollments.id AS enrollment_id, student_enrollments.student_id,
+      student_enrollments.class_name, student_enrollments.status AS enrollment_status, student_enrollments.decision,
+      students.full_name, students.gender, students.status AS student_status
+      FROM student_enrollments JOIN students ON students.student_id = student_enrollments.student_id
+      WHERE student_enrollments.academic_year_id = ? AND (? = '' OR student_enrollments.class_name = ?)
+      ORDER BY student_enrollments.class_name COLLATE NOCASE, students.full_name COLLATE NOCASE`, [id, className, className])
+    return { success: true, students }
+  } catch (error) {
+    return { success: false, error: error.message, students: [] }
+  } finally {
+    db.close()
+  }
+}
+
+async function promoteStudents(request = {}) {
+  const sourceYearId = Number(request.from_academic_year_id)
+  const targetYearId = Number(request.to_academic_year_id)
+  const decisions = Array.isArray(request.decisions) ? request.decisions : []
+  if (!Number.isInteger(sourceYearId) || !Number.isInteger(targetYearId) || sourceYearId === targetYearId) return { success: false, error: 'Choose two different academic years.' }
+  if (!decisions.length || decisions.length > 500) return { success: false, error: 'Select between 1 and 500 students to process.' }
+  if (new Set(decisions.map(decision => String(decision.student_id || ''))).size !== decisions.length) return { success: false, error: 'A student can only appear once in a promotion batch.' }
+  const db = new sqlite3.Database(getDatabasePath())
+  try {
+    const years = await all(db, 'SELECT id, name, status FROM academic_years WHERE id IN (?, ?)', [sourceYearId, targetYearId])
+    const sourceYear = years.find(year => year.id === sourceYearId)
+    const targetYear = years.find(year => year.id === targetYearId)
+    if (!sourceYear || !targetYear) throw new Error('Academic year not found.')
+    if (targetYear.status === 'CLOSED') throw new Error('Cannot enroll students into a closed academic year.')
+    const allowedOutcomes = ['PROMOTED', 'RETAINED', 'FAILED', 'TRANSFERRED', 'WITHDRAWN']
+    await run(db, 'BEGIN IMMEDIATE TRANSACTION')
+    const now = new Date().toISOString()
+    for (const decision of decisions) {
+      const studentId = String(decision.student_id || '').trim()
+      const outcome = String(decision.outcome || 'PROMOTED').toUpperCase()
+      const className = String(decision.class_name || '').trim()
+      if (!studentId || !allowedOutcomes.includes(outcome)) throw new Error('Each student needs a valid promotion outcome.')
+      const source = await all(db, `SELECT student_enrollments.*, students.full_name, students.status AS student_status
+        FROM student_enrollments JOIN students ON students.student_id = student_enrollments.student_id
+        WHERE student_enrollments.student_id = ? AND student_enrollments.academic_year_id = ?`, [studentId, sourceYearId])
+      if (!source.length) throw new Error(`No source-year enrollment found for ${studentId}.`)
+      const sourceEnrollment = source[0]
+      if (['TRANSFERRED', 'WITHDRAWN'].includes(outcome)) {
+        await run(db, 'UPDATE student_enrollments SET status = ?, decision = ?, updated_at = ? WHERE id = ?', [outcome, outcome, now, sourceEnrollment.id])
+        await run(db, `INSERT INTO promotion_history (student_id, from_academic_year_id, to_academic_year_id, from_class_name, to_class_name, outcome, notes, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [studentId, sourceYearId, targetYearId, sourceEnrollment.class_name, className || sourceEnrollment.class_name, outcome, String(decision.notes || '').trim() || null, now])
+        await run(db, 'UPDATE students SET status = ?, updated_at = ? WHERE student_id = ?', [outcome === 'WITHDRAWN' ? 'Withdrawn' : 'Transferred', now, studentId])
+        continue
+      }
+      if (!className) throw new Error(`Choose a destination class for ${studentId}.`)
+      const targetClass = await all(db, 'SELECT name FROM classes WHERE name = ? AND is_active = 1', [className])
+      if (!targetClass.length) throw new Error(`Destination class ${className} is not active.`)
+      const existingTarget = await all(db, 'SELECT id FROM student_enrollments WHERE student_id = ? AND academic_year_id = ?', [studentId, targetYearId])
+      if (existingTarget.length) throw new Error(`${studentId} already has an enrollment in ${targetYear.name}.`)
+      const studentForAccount = { student_id: studentId, class_name: className, academic_year: targetYear.name }
+      const accountResult = await ensureStudentAccount(db, studentForAccount)
+      if (!accountResult.created) throw new Error(`Cannot enroll ${studentId}: add a fee template for ${className} first.`)
+      await run(db, `INSERT INTO student_enrollments
+        (student_id, academic_year_id, class_name, status, decision, notes, created_at, updated_at)
+        VALUES (?, ?, ?, 'ACTIVE', ?, ?, ?, ?)`, [studentId, targetYearId, className, outcome, String(decision.notes || '').trim() || null, now, now])
+      await run(db, 'UPDATE student_enrollments SET status = ?, decision = ?, updated_at = ? WHERE id = ?', [outcome, outcome, now, sourceEnrollment.id])
+      await run(db, `INSERT INTO promotion_history (student_id, from_academic_year_id, to_academic_year_id, from_class_name, to_class_name, outcome, notes, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [studentId, sourceYearId, targetYearId, sourceEnrollment.class_name, className, outcome, String(decision.notes || '').trim() || null, now])
+      await run(db, 'UPDATE students SET class_name = ?, academic_year = ?, status = \'Active\', updated_at = ? WHERE student_id = ?', [className, targetYear.name, now, studentId])
+    }
+    await run(db, 'COMMIT')
+    return { success: true, processed: decisions.length }
+  } catch (error) {
+    try { await run(db, 'ROLLBACK') } catch (_) {}
+    return { success: false, error: error.message }
+  } finally {
+    db.close()
+  }
+}
+
+async function listPromotionHistory(filters = {}) {
+  const db = new sqlite3.Database(getDatabasePath())
+  try {
+    const yearId = Number(filters.academic_year_id) || 0
+    return await all(db, `SELECT promotion_history.*, students.full_name,
+      from_year.name AS from_academic_year, to_year.name AS to_academic_year
+      FROM promotion_history JOIN students ON students.student_id = promotion_history.student_id
+      JOIN academic_years AS from_year ON from_year.id = promotion_history.from_academic_year_id
+      JOIN academic_years AS to_year ON to_year.id = promotion_history.to_academic_year_id
+      WHERE (? = 0 OR promotion_history.from_academic_year_id = ? OR promotion_history.to_academic_year_id = ?)
+      ORDER BY promotion_history.created_at DESC, promotion_history.id DESC`, [yearId, yearId, yearId])
+  } finally {
+    db.close()
+  }
+}
+
+async function listTeachers(query = '') {
+  const db = new sqlite3.Database(getDatabasePath())
+  try {
+    const search = String(query || '').trim()
+    return await all(db, `SELECT teachers.*,
+      GROUP_CONCAT(subjects.name, ', ') AS subjects, GROUP_CONCAT(subjects.id, ',') AS subject_ids
+      FROM teachers LEFT JOIN teacher_subjects ON teacher_subjects.teacher_id = teachers.teacher_id
+      LEFT JOIN subjects ON subjects.id = teacher_subjects.subject_id
+      WHERE (? = '' OR teachers.teacher_id LIKE ? OR teachers.full_name LIKE ? OR teachers.specialization LIKE ?)
+      GROUP BY teachers.id ORDER BY teachers.full_name COLLATE NOCASE LIMIT 500`, [search, `%${search}%`, `%${search}%`, `%${search}%`])
+  } finally {
+    db.close()
+  }
+}
+
+async function saveTeacher(teacher = {}) {
+  const id = Number(teacher.id) || null
+  const teacherId = String(teacher.teacher_id || '').trim().toUpperCase()
+  const fullName = String(teacher.full_name || '').trim()
+  const photoData = String(teacher.photo_data || '').trim() || null
+  const subjectIds = Array.isArray(teacher.subject_ids) ? [...new Set(teacher.subject_ids.map(Number).filter(Number.isInteger))] : []
+  if (!teacherId || !/^[A-Z0-9-]{2,30}$/.test(teacherId) || !fullName) return { success: false, error: 'Enter a valid teacher ID and full name.' }
+  if (photoData && (!/^data:image\/(png|jpeg|webp);base64,/.test(photoData) || photoData.length > 4_000_000)) return { success: false, error: 'Teacher photos must be PNG, JPG, or WebP and under 3 MB.' }
+  if (teacher.email && String(teacher.email).length > 254) return { success: false, error: 'Email address is too long.' }
+  const db = new sqlite3.Database(getDatabasePath())
+  const now = new Date().toISOString()
+  try {
+    await run(db, 'BEGIN IMMEDIATE TRANSACTION')
+    const existingTeacher = await all(db, 'SELECT id, teacher_id FROM teachers WHERE teacher_id = ?', [teacherId])
+    if (id) {
+      const record = await all(db, 'SELECT id, teacher_id FROM teachers WHERE id = ?', [id])
+      if (!record.length) throw new Error('Teacher not found.')
+      if (record[0].teacher_id !== teacherId) throw new Error('Teacher ID cannot be changed.')
+    } else if (existingTeacher.length) {
+      throw new Error('That teacher ID already exists.')
+    }
+    const subjects = subjectIds.length ? await all(db, `SELECT id FROM subjects WHERE id IN (${subjectIds.map(() => '?').join(',')})`, subjectIds) : []
+    if (subjects.length !== subjectIds.length) throw new Error('One or more selected subjects are unavailable.')
+    await run(db, `INSERT INTO teachers (teacher_id, full_name, photo_data, gender, phone, email, address, qualification, specialization, employment_status, date_employed, notes, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(teacher_id) DO UPDATE SET full_name = excluded.full_name, photo_data = excluded.photo_data,
+      gender = excluded.gender, phone = excluded.phone, email = excluded.email, address = excluded.address,
+      qualification = excluded.qualification, specialization = excluded.specialization,
+      employment_status = excluded.employment_status, date_employed = excluded.date_employed,
+      notes = excluded.notes, updated_at = excluded.updated_at`,
+    [teacherId, fullName, photoData, teacher.gender || null, String(teacher.phone || '').trim() || null,
+      String(teacher.email || '').trim() || null, String(teacher.address || '').trim() || null,
+      String(teacher.qualification || '').trim() || null, String(teacher.specialization || '').trim() || null,
+      teacher.employment_status === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE', teacher.date_employed || null,
+      String(teacher.notes || '').trim() || null, now, now])
+    await run(db, 'DELETE FROM teacher_subjects WHERE teacher_id = ?', [teacherId])
+    for (const subjectId of subjectIds) await run(db, 'INSERT INTO teacher_subjects (teacher_id, subject_id) VALUES (?, ?)', [teacherId, subjectId])
+    await run(db, 'COMMIT')
+    return { success: true }
+  } catch (error) {
+    try { await run(db, 'ROLLBACK') } catch (_) {}
+    return { success: false, error: error.message }
+  } finally {
+    db.close()
+  }
+}
+
+async function deleteTeacher(teacherId) {
+  const id = String(teacherId || '').trim().toUpperCase()
+  if (!id) return { success: false, error: 'Select a valid teacher.' }
+  const db = new sqlite3.Database(getDatabasePath())
+  try {
+    await run(db, 'BEGIN IMMEDIATE TRANSACTION')
+    const teachers = await all(db, 'SELECT teacher_id FROM teachers WHERE teacher_id = ?', [id])
+    if (!teachers.length) throw new Error('Teacher not found.')
+    const timetableRows = await all(db, 'SELECT COUNT(*) AS total FROM timetable_entries WHERE teacher_id = ?', [id])
+    if (timetableRows[0].total) throw new Error('This teacher has timetable entries and cannot be deleted. Mark the teacher inactive instead.')
+    await run(db, 'DELETE FROM teacher_subjects WHERE teacher_id = ?', [id])
+    await run(db, 'DELETE FROM teachers WHERE teacher_id = ?', [id])
+    await run(db, 'COMMIT')
+    return { success: true }
+  } catch (error) {
+    try { await run(db, 'ROLLBACK') } catch (_) {}
+    return { success: false, error: error.message }
+  } finally {
+    db.close()
+  }
+}
+
+async function listSubjects(includeInactive = false) {
+  const db = new sqlite3.Database(getDatabasePath())
+  try {
+    return await all(db, `SELECT subjects.*, COUNT(teacher_subjects.teacher_id) AS teacher_count,
+      (SELECT COUNT(*) FROM timetable_entries WHERE timetable_entries.subject_id = subjects.id) AS timetable_count
+      FROM subjects LEFT JOIN teacher_subjects ON teacher_subjects.subject_id = subjects.id
+      ${includeInactive ? '' : 'WHERE subjects.is_active = 1'} GROUP BY subjects.id ORDER BY subjects.name COLLATE NOCASE`)
+  } finally {
+    db.close()
+  }
+}
+
+async function saveSubject(subject = {}) {
+  const id = Number(subject.id) || null
+  const name = String(subject.name || '').trim()
+  const shortCode = String(subject.short_code || '').trim().toUpperCase()
+  if (!name || name.length > 100 || !/^[A-Z0-9-]{2,12}$/.test(shortCode)) return { success: false, error: 'Enter a subject name and a 2–12 character code.' }
+  const db = new sqlite3.Database(getDatabasePath())
+  const now = new Date().toISOString()
+  try {
+    if (id) {
+      const existing = await all(db, 'SELECT id FROM subjects WHERE id = ?', [id])
+      if (!existing.length) throw new Error('Subject not found.')
+      await run(db, 'UPDATE subjects SET name = ?, short_code = ?, description = ?, is_active = ?, updated_at = ? WHERE id = ?', [name, shortCode, String(subject.description || '').trim() || null, subject.is_active === false ? 0 : 1, now, id])
+    } else {
+      await run(db, 'INSERT INTO subjects (name, short_code, description, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)', [name, shortCode, String(subject.description || '').trim() || null, subject.is_active === false ? 0 : 1, now, now])
+    }
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message.includes('UNIQUE') ? 'Subject name or short code already exists.' : error.message }
+  } finally {
+    db.close()
+  }
+}
+
+async function deleteSubject(subjectId) {
+  const id = Number(subjectId)
+  if (!Number.isInteger(id) || id < 1) return { success: false, error: 'Select a valid subject.' }
+  const db = new sqlite3.Database(getDatabasePath())
+  try {
+    await run(db, 'BEGIN IMMEDIATE TRANSACTION')
+    const subjects = await all(db, 'SELECT id FROM subjects WHERE id = ?', [id])
+    if (!subjects.length) throw new Error('Subject not found.')
+    const references = await all(db, `SELECT
+      (SELECT COUNT(*) FROM teacher_subjects WHERE subject_id = ?) +
+      (SELECT COUNT(*) FROM timetable_entries WHERE subject_id = ?) AS total`, [id, id])
+    if (references[0].total) throw new Error('This subject is assigned to teachers or timetables and cannot be deleted. Deactivate it instead.')
+    await run(db, 'DELETE FROM subjects WHERE id = ?', [id])
+    await run(db, 'COMMIT')
+    return { success: true }
+  } catch (error) {
+    try { await run(db, 'ROLLBACK') } catch (_) {}
+    return { success: false, error: error.message }
+  } finally {
+    db.close()
+  }
+}
+
+async function listTimetableEntries(filters = {}) {
+  const db = new sqlite3.Database(getDatabasePath())
+  try {
+    return await all(db, `SELECT timetable_entries.*, academic_years.name AS academic_year,
+      teachers.full_name AS teacher_name, teachers.photo_data AS teacher_photo,
+      subjects.name AS subject_name, subjects.short_code AS subject_code
+      FROM timetable_entries JOIN academic_years ON academic_years.id = timetable_entries.academic_year_id
+      JOIN teachers ON teachers.teacher_id = timetable_entries.teacher_id
+      JOIN subjects ON subjects.id = timetable_entries.subject_id
+      WHERE (? = 0 OR timetable_entries.academic_year_id = ?)
+        AND (? = 0 OR timetable_entries.day_of_week = ?)
+        AND (? = '' OR timetable_entries.class_name = ?)
+        AND (? = '' OR timetable_entries.teacher_id = ?)
+        AND (? = 0 OR timetable_entries.subject_id = ?)
+      ORDER BY timetable_entries.day_of_week, timetable_entries.start_time, timetable_entries.class_name`,
+    [Number(filters.academic_year_id) || 0, Number(filters.academic_year_id) || 0,
+      Number(filters.day_of_week) || 0, Number(filters.day_of_week) || 0,
+      filters.class_name || '', filters.class_name || '', filters.teacher_id || '', filters.teacher_id || '',
+      Number(filters.subject_id) || 0, Number(filters.subject_id) || 0])
+  } finally {
+    db.close()
+  }
+}
+
+async function saveTimetableEntry(entry = {}) {
+  const id = Number(entry.id) || 0
+  const yearId = Number(entry.academic_year_id)
+  const day = Number(entry.day_of_week)
+  const period = Number(entry.period_number)
+  const className = String(entry.class_name || '').trim()
+  const teacherId = String(entry.teacher_id || '').trim()
+  const subjectId = Number(entry.subject_id)
+  const startTime = String(entry.start_time || '').trim()
+  const endTime = String(entry.end_time || '').trim()
+  const room = String(entry.room || '').trim() || null
+  if (!Number.isInteger(yearId) || yearId < 1 || !Number.isInteger(day) || day < 1 || day > 5 || !Number.isInteger(period) || period < 1 || !className || !teacherId || !Number.isInteger(subjectId)) return { success: false, error: 'Complete all required timetable fields.' }
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(startTime) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(endTime) || startTime >= endTime) return { success: false, error: 'Enter a valid period time range.' }
+  const db = new sqlite3.Database(getDatabasePath())
+  try {
+    const conflicts = await all(db, `SELECT timetable_entries.id, timetable_entries.class_name, timetable_entries.teacher_id,
+      timetable_entries.room, teachers.full_name AS teacher_name
+      FROM timetable_entries JOIN teachers ON teachers.teacher_id = timetable_entries.teacher_id
+      WHERE timetable_entries.academic_year_id = ? AND timetable_entries.day_of_week = ?
+        AND (? = 0 OR timetable_entries.id != ?) AND timetable_entries.start_time < ? AND timetable_entries.end_time > ?
+        AND (timetable_entries.class_name = ? OR timetable_entries.teacher_id = ? OR (? != '' AND timetable_entries.room = ?))`,
+    [yearId, day, id, id, endTime, startTime, className, teacherId, room || '', room || ''])
+    if (conflicts.length) {
+      const conflict = conflicts[0]
+      if (conflict.class_name === className) throw new Error(`${className} already has a class during this time.`)
+      if (conflict.teacher_id === teacherId) throw new Error(`${conflict.teacher_name} is already assigned during this time.`)
+      throw new Error(`Room ${room} is already assigned during this time.`)
+    }
+    const now = new Date().toISOString()
+    if (id) await run(db, `UPDATE timetable_entries SET academic_year_id = ?, class_name = ?, day_of_week = ?, period_number = ?, start_time = ?, end_time = ?, subject_id = ?, teacher_id = ?, room = ?, updated_at = ? WHERE id = ?`, [yearId, className, day, period, startTime, endTime, subjectId, teacherId, room, now, id])
+    else await run(db, `INSERT INTO timetable_entries (academic_year_id, class_name, day_of_week, period_number, start_time, end_time, subject_id, teacher_id, room, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [yearId, className, day, period, startTime, endTime, subjectId, teacherId, room, now, now])
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message }
+  } finally {
+    db.close()
+  }
+}
+
+async function deleteTimetableEntry(id) {
+  const db = new sqlite3.Database(getDatabasePath())
+  try {
+    const result = await run(db, 'DELETE FROM timetable_entries WHERE id = ?', [Number(id)])
+    return result.changes ? { success: true } : { success: false, error: 'Timetable entry not found.' }
+  } finally {
+    db.close()
+  }
+}
+
+async function listCalendarEvents(filters = {}) {
+  const db = new sqlite3.Database(getDatabasePath())
+  try {
+    return await all(db, `SELECT calendar_events.*, academic_years.name AS academic_year
+      FROM calendar_events LEFT JOIN academic_years ON academic_years.id = calendar_events.academic_year_id
+      WHERE (? = 0 OR calendar_events.academic_year_id = ?) AND (? = '' OR calendar_events.category = ?)
+        AND (? = '' OR calendar_events.starts_on <= ? AND calendar_events.ends_on >= ?)
+        AND (? = 1 OR calendar_events.status = 'SCHEDULED')
+      ORDER BY calendar_events.starts_on, calendar_events.start_time, calendar_events.title COLLATE NOCASE`,
+    [Number(filters.academic_year_id) || 0, Number(filters.academic_year_id) || 0,
+      filters.category || '', filters.category || '', filters.month_end || '', filters.month_end || '',
+      filters.month_start || '', filters.include_cancelled ? 1 : 0])
+  } finally {
+    db.close()
+  }
+}
+
+async function saveCalendarEvent(event = {}) {
+  const id = Number(event.id) || null
+  const title = String(event.title || '').trim()
+  const startsOn = String(event.starts_on || '').trim()
+  const endsOn = String(event.ends_on || '').trim()
+  if (!title || title.length > 160 || !/^\d{4}-\d{2}-\d{2}$/.test(startsOn) || !/^\d{4}-\d{2}-\d{2}$/.test(endsOn) || startsOn > endsOn) return { success: false, error: 'Enter an event title and a valid date range.' }
+  const academicYearId = Number(event.academic_year_id) || null
+  const db = new sqlite3.Database(getDatabasePath())
+  const now = new Date().toISOString()
+  try {
+    if (id) await run(db, `UPDATE calendar_events SET academic_year_id = ?, title = ?, category = ?, starts_on = ?, ends_on = ?, start_time = ?, end_time = ?, location = ?, description = ?, status = ?, updated_at = ? WHERE id = ?`, [academicYearId, title, event.category || 'Other', startsOn, endsOn, event.start_time || null, event.end_time || null, String(event.location || '').trim() || null, String(event.description || '').trim() || null, event.status === 'CANCELLED' ? 'CANCELLED' : 'SCHEDULED', now, id])
+    else await run(db, `INSERT INTO calendar_events (academic_year_id, title, category, starts_on, ends_on, start_time, end_time, location, description, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [academicYearId, title, event.category || 'Other', startsOn, endsOn, event.start_time || null, event.end_time || null, String(event.location || '').trim() || null, String(event.description || '').trim() || null, event.status === 'CANCELLED' ? 'CANCELLED' : 'SCHEDULED', now, now])
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: error.message }
+  } finally {
+    db.close()
+  }
+}
+
+async function deleteCalendarEvent(id) {
+  const db = new sqlite3.Database(getDatabasePath())
+  try {
+    const result = await run(db, 'DELETE FROM calendar_events WHERE id = ?', [Number(id)])
+    return result.changes ? { success: true } : { success: false, error: 'Calendar event not found.' }
+  } finally {
+    db.close()
+  }
+}
+
 async function listFinanceSetup() {
   const db = new sqlite3.Database(getDatabasePath())
   try {
@@ -849,11 +1403,12 @@ async function getFinanceSummary() {
     `)
     
     const recentPayments = await all(db, `
-      SELECT payments.receipt_number, payments.amount_cents, payments.payment_method, payments.payment_date,
-             students.student_id, students.full_name, students.class_name
+            SELECT payments.receipt_number, payments.amount_cents, payments.payment_method, payments.payment_date,
+              students.student_id, students.full_name, student_accounts.class_name, academic_years.name AS academic_year
       FROM payments
       JOIN student_accounts ON student_accounts.id = payments.account_id
       JOIN students ON students.student_id = student_accounts.student_id
+            JOIN academic_years ON academic_years.id = student_accounts.academic_year_id
       WHERE payments.status = 'VALID'
       ORDER BY payments.id DESC LIMIT 10
     `)
@@ -895,11 +1450,12 @@ async function listOwingStudents() {
   const db = new sqlite3.Database(getDatabasePath())
   try {
     // Only include ACTIVE students in owing students list
-    const rows = await all(db, `SELECT students.student_id, students.full_name, students.class_name, students.academic_year,
+    const rows = await all(db, `SELECT students.student_id, students.full_name, student_accounts.class_name, academic_years.name AS academic_year,
         COALESCE(SUM(student_obligations.amount_cents), 0) AS obligation,
         COALESCE((SELECT SUM(amount_cents) FROM payments WHERE payments.account_id = student_accounts.id AND payments.status = 'VALID'), 0) AS paid
       FROM students
       JOIN student_accounts ON student_accounts.student_id = students.student_id
+      JOIN academic_years ON academic_years.id = student_accounts.academic_year_id
       JOIN student_obligations ON student_obligations.account_id = student_accounts.id
       WHERE students.status = 'Active'
       GROUP BY student_accounts.id
@@ -924,7 +1480,7 @@ async function listFinancialStatusReport(filters = {}) {
     if (!['First Semester', 'Second Semester', 'Full Year'].includes(phase)) throw new Error('Select a valid financial period.')
     if (!['All', 'Owing', 'Fully Paid'].includes(paymentStatus)) throw new Error('Select a valid payment status.')
 
-    const rows = await all(db, `SELECT students.student_id, students.full_name, students.class_name,
+    const rows = await all(db, `SELECT students.student_id, students.full_name, student_accounts.class_name,
         student_accounts.id AS account_id,
         student_obligations.phase,
         SUM(student_obligations.amount_cents) AS phase_obligation,
@@ -934,9 +1490,9 @@ async function listFinancialStatusReport(filters = {}) {
       JOIN academic_years ON academic_years.id = student_accounts.academic_year_id
       JOIN student_obligations ON student_obligations.account_id = student_accounts.id
       WHERE students.status = 'Active' AND academic_years.name = ?
-        AND (? = '' OR students.class_name = ?)
+        AND (? = '' OR student_accounts.class_name = ?)
       GROUP BY student_accounts.id, student_obligations.phase
-      ORDER BY students.class_name COLLATE NOCASE, students.full_name COLLATE NOCASE`,
+      ORDER BY student_accounts.class_name COLLATE NOCASE, students.full_name COLLATE NOCASE`,
     [academicYear, className, className])
 
     const accounts = new Map()
@@ -1211,6 +1767,8 @@ async function getLicenseState() {
         success: true,
         status: 'NOT_ACTIVATED',
         canUseApp: false,
+        license_type: null,
+        duration_months: null,
         start_date: null,
         end_date: null,
         activated_at: null,
@@ -1221,6 +1779,10 @@ async function getLicenseState() {
     }
 
     const currentDate = new Date(`${today}T00:00:00`)
+    const planRows = await all(db, `SELECT license_history.license_type, vouchers.duration_months
+      FROM license_history LEFT JOIN vouchers ON vouchers.voucher_code = license_history.voucher_code
+      WHERE license_history.activated_at = ? ORDER BY license_history.id DESC LIMIT 1`, [license.activated_at])
+    const plan = planRows[0] || {}
     const priorCheck = license.last_checked_date ? new Date(`${license.last_checked_date}T00:00:00`) : null
     const clockRollback = !!(priorCheck && currentDate.getTime() < priorCheck.getTime())
     const endDate = new Date(`${license.end_date}T23:59:59.999`)
@@ -1234,6 +1796,8 @@ async function getLicenseState() {
       success: true,
       status,
       canUseApp: !expired && !suspended,
+      license_type: plan.license_type || null,
+      duration_months: Number(plan.duration_months) || null,
       start_date: license.start_date,
       end_date: license.end_date,
       activated_at: license.activated_at,
@@ -1386,6 +1950,10 @@ module.exports = {
   listStudents,
   updateStudent,
   deleteStudent,
+  listAcademicYears, saveAcademicYear, setAcademicYearStatus, listAcademicClasses, saveAcademicClass, deleteAcademicClass,
+  getEnrollmentRoster, promoteStudents, listPromotionHistory,
+  listTeachers, saveTeacher, deleteTeacher, listSubjects, saveSubject, deleteSubject, listTimetableEntries, saveTimetableEntry, deleteTimetableEntry,
+  listCalendarEvents, saveCalendarEvent, deleteCalendarEvent,
   verifyUser, getDeveloperCredentialStatus, setupDeveloperCredential, verifyDeveloperCredential, changeDeveloperCredential,
   createUser, changePassword, getSchoolProfile, saveSchoolProfile,
   listFinanceSetup,

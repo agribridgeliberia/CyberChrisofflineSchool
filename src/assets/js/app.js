@@ -56,6 +56,7 @@ function showLicenseActivation(status = {}) {
         ${status.clockRollbackNotice ? `<div class="license-warning">${escapeHtml(status.clockRollbackNotice)}</div>` : ''}
         <button type="button" id="openDeveloperFromLicense" class="btn btn-outline-secondary w-100 mt-2"><i class="bi bi-shield-lock"></i> Developer Screen</button>
       </div>
+      <button type="button" id="licenseWhatsAppContact" class="whatsapp-support-button" aria-label="Contact us on WhatsApp" title="Contact us on WhatsApp"><i class="bi bi-headset" aria-hidden="true"></i></button>
     </div>
   `
 
@@ -63,6 +64,7 @@ function showLicenseActivation(status = {}) {
   const input = document.getElementById('licenseVoucherInput')
   if (input) input.focus()
   document.getElementById('openDeveloperFromLicense').addEventListener('click', () => openDeveloperScreen(true))
+  document.getElementById('licenseWhatsAppContact').addEventListener('click', () => window.api.openWhatsAppContact())
 
   const form = document.getElementById('licenseActivationForm')
   form.addEventListener('submit', async (event) => {
@@ -214,14 +216,13 @@ async function renderShell() {
           <a id="navAdmission" class="nav-link text-white" href="#/admission"><i class="bi bi-person-plus" aria-hidden="true"></i><span>Admission</span></a>
           <a id="navFinance" class="nav-link text-white" href="#/finance"><i class="bi bi-cash-stack" aria-hidden="true"></i><span>Finance</span></a>
           <a id="navSettings" class="nav-link text-white" href="#/settings"><i class="bi bi-gear" aria-hidden="true"></i><span>Settings</span></a>
-          <a id="navDeveloper" class="nav-link text-white" href="#/developer"><i class="bi bi-shield-lock" aria-hidden="true"></i><span>Developer Screen</span></a>
           <a id="navAcademics" class="nav-link text-white" href="#/academics"><i class="bi bi-mortarboard" aria-hidden="true"></i><span>Academics</span></a>
         </nav>
       </div>
       <div class="sidebar-footer">
         <div style="margin-bottom:8px"><small>Logged in as admin</small></div>
         <div style="margin-bottom:12px"><button id="themeToggleBtn" class="btn-theme-toggle" title="Toggle dark/light mode"><i class="bi bi-moon"></i></button></div>
-        <div><button id="changePasswordBtn" class="btn btn-link text-white sidebar-password-btn"><i class="bi bi-key"></i> Change Password</button><button id="logoutBtn" class="btn-logout-sidebar">Logout</button></div>
+        <div><button id="changePasswordBtn" class="btn btn-link text-white sidebar-password-btn"><i class="bi bi-key"></i> Change Password</button><button id="logoutBtn" class="btn-logout-sidebar">Logout</button><button id="developerScreenBtn" class="btn-logout-sidebar mt-2"><i class="bi bi-shield-lock" aria-hidden="true"></i> Developer Screen</button></div>
       </div>
     </div>
   `
@@ -240,13 +241,13 @@ async function renderShell() {
   const navAdmission = document.getElementById('navAdmission')
   const navFinance = document.getElementById('navFinance')
   const navSettings = document.getElementById('navSettings')
-  const navDeveloper = document.getElementById('navDeveloper')
+  const developerScreenBtn = document.getElementById('developerScreenBtn')
   const navAcademics = document.getElementById('navAcademics')
   if (navDashboard) navDashboard.addEventListener('click', (e) => { e.preventDefault(); loadDashboard() })
   if (navAdmission) navAdmission.addEventListener('click', (e) => { e.preventDefault(); loadAdmissionRecords() })
   if (navFinance) navFinance.addEventListener('click', (e) => { e.preventDefault(); loadFinance() })
   if (navSettings) navSettings.addEventListener('click', (e) => { e.preventDefault(); loadSettings() })
-  if (navDeveloper) navDeveloper.addEventListener('click', (e) => { e.preventDefault(); openDeveloperScreen(false) })
+  if (developerScreenBtn) developerScreenBtn.addEventListener('click', () => openDeveloperScreen(false))
   if (navAcademics) navAcademics.addEventListener('click', (e) => { e.preventDefault(); loadAcademics() })
 }
 
@@ -448,8 +449,15 @@ function showChangePasswordDialog() {
   })
 }
 
-function showLogin() {
+async function showLogin() {
   const main = document.getElementById('main')
+  localStorage.removeItem('rememberedLoginUsername')
+  let rememberedLogin = { username: '', password: '' }
+  try {
+    const result = await window.api.getRememberedLogin()
+    if (result.success) rememberedLogin = result
+  } catch (error) {}
+  const rememberChecked = Boolean(rememberedLogin.username && rememberedLogin.password)
   // remove any dynamic sidebar (we removed the static `#sidebar` element)
   const existingSidebar = document.getElementById('app-sidebar')
   if (existingSidebar) existingSidebar.remove()
@@ -487,10 +495,10 @@ function showLogin() {
 
             <div class="remember-row">
               <div class="form-check">
-                <input class="form-check-input" type="checkbox" value="" id="rememberMe">
-                <label class="form-check-label" for="rememberMe">Remember me</label>
+                <input class="form-check-input" type="checkbox" value="" id="rememberMe" ${rememberChecked ? 'checked' : ''}>
+                <label class="form-check-label" for="rememberMe">Remember me on this device</label>
               </div>
-              <div><small class="text-muted">Version 3.0.0</small></div>
+              <div><small class="text-muted">Version 4.1.0</small></div>
             </div>
 
             <div class="inline-error" id="loginError">Invalid credentials. Please try again.</div>
@@ -503,7 +511,11 @@ function showLogin() {
         </div>
       </div>
     </div>
+    <button type="button" id="loginWhatsAppContact" class="whatsapp-support-button" aria-label="Contact us on WhatsApp" title="Contact us on WhatsApp"><i class="bi bi-headset" aria-hidden="true"></i></button>
   `
+  document.getElementById('login_username').value = rememberedLogin.username
+  document.getElementById('login_password').value = rememberedLogin.password
+  document.getElementById('loginWhatsAppContact').addEventListener('click', () => window.api.openWhatsAppContact())
   document.getElementById('loginForm').addEventListener('submit', async (e) => {
     e.preventDefault()
     // prevent repeated submissions
@@ -518,12 +530,16 @@ function showLogin() {
     try {
       const res = await window.api.login({ username, password })
       if (res.success) {
+        const rememberResult = document.getElementById('rememberMe').checked
+          ? await window.api.saveRememberedLogin({ username, password })
+          : await window.api.clearRememberedLogin()
         // transition out
         const panel = document.getElementById('loginPanel')
         panel.classList.add('fade-out')
         setTimeout(async () => {
           await renderShell()
           loadDashboard()
+          if (!rememberResult.success) showToast(rememberResult.error || 'Unable to update remembered login.', 'error')
         }, 260)
       } else {
         document.getElementById('loginError').innerText = res.error || 'Invalid credentials. Please try again.'
@@ -554,6 +570,9 @@ function showLogin() {
 async function loadDashboard() {
   const main = document.getElementById('main')
   await renderSystemMarquee()
+  const licenseState = await window.api.getLicenseState()
+  const licenseStatus = String(licenseState.status || 'UNKNOWN').toUpperCase()
+  const remainingDays = Math.max(0, Number(licenseState.days_remaining) || 0)
   main.innerHTML = `
     <div class="container-fluid py-4">
       <div class="page-header d-flex justify-content-between align-items-center mb-4">
@@ -563,6 +582,11 @@ async function loadDashboard() {
         </div>
         <div class="text-end">
           <p class="text-muted small mb-0">Last updated: <span id="updateTime">just now</span></p>
+          <aside class="settings-license-summary ms-auto mt-2" aria-label="License information">
+            <span class="settings-license-icon"><i class="bi bi-shield-check" aria-hidden="true"></i></span>
+            <span class="settings-license-copy"><strong>${escapeHtml(licenseState.license_type || 'No active plan')}${licenseState.duration_months ? ` · ${Number(licenseState.duration_months)} months` : ''}</strong><small>${remainingDays} ${remainingDays === 1 ? 'day' : 'days'} left · Expires ${escapeHtml(licenseState.end_date || '—')}</small></span>
+            <span class="settings-license-status ${licenseStatus.toLowerCase()}">${escapeHtml(licenseStatus)}</span>
+          </aside>
         </div>
       </div>
 
@@ -1762,8 +1786,10 @@ async function loadFinanceSetup() {
 
 async function loadSettings() {
   const main = document.getElementById('main')
-  const profileResult = await window.api.getSchoolProfile()
+  const [profileResult, licenseState] = await Promise.all([window.api.getSchoolProfile(), window.api.getLicenseState()])
   const profile = profileResult.profile || { school_name: 'CyberChris Offline School', address: '', motto: '', logo_data: '' }
+  const licenseStatus = String(licenseState.status || 'UNKNOWN').toUpperCase()
+  const remainingDays = Math.max(0, Number(licenseState.days_remaining) || 0)
   main.innerHTML = `
     <div class="container-fluid py-4">
       <div class="page-header">
@@ -1771,7 +1797,12 @@ async function loadSettings() {
           <h2>Settings</h2>
           <p class="small text-muted">System configuration, users and preferences will be available here.</p>
         </div>
-        <div>
+        <div class="settings-header-actions">
+          <aside class="settings-license-summary" aria-label="License information">
+            <span class="settings-license-icon"><i class="bi bi-shield-check" aria-hidden="true"></i></span>
+            <span class="settings-license-copy"><strong>${escapeHtml(licenseState.license_type || 'No active plan')}${licenseState.duration_months ? ` · ${Number(licenseState.duration_months)} months` : ''}</strong><small>${remainingDays} ${remainingDays === 1 ? 'day' : 'days'} left · Expires ${escapeHtml(licenseState.end_date || '—')}</small></span>
+            <span class="settings-license-status ${licenseStatus.toLowerCase()}">${escapeHtml(licenseStatus)}</span>
+          </aside>
           <button class="btn btn-secondary-deep" onclick="loadDashboard()">&larr; Back</button>
         </div>
       </div>
@@ -1809,22 +1840,850 @@ async function loadSettings() {
   })
 }
 
+let academicYearsCache = []
+let academicClassesCache = []
+let academicTeachersCache = []
+let academicSubjectsCache = []
+let academicCalendarMonth = new Date()
+
 async function loadAcademics() {
   const main = document.getElementById('main')
+  main.innerHTML = '<div class="container-fluid py-4"><div class="finance-loading">Loading classes...</div></div>'
+  academicClassesCache = await window.api.listAcademicClasses()
   main.innerHTML = `
-    <div class="container-fluid py-4">
-      <div class="page-header">
-        <div>
-          <h2>Academics (Coming Soon)</h2>
-          <p class="small text-muted">Academics will handle classes, subjects, results and promotion.</p>
-        </div>
-        <div>
-          <button class="btn btn-secondary-deep" onclick="loadDashboard()">&larr; Back</button>
-        </div>
+    <div class="container-fluid py-4 academic-screen">
+      <div class="page-header academic-page-header">
+        <div><div class="finance-eyebrow"><i class="bi bi-mortarboard"></i> Academic Management</div><h2>Classes</h2><p class="small text-muted">Manage class names and enrollment availability.</p></div>
+        <span class="finance-status" id="academicClassCount"></span>
       </div>
-      <div class="placeholder-card">This module is under development.</div>
+      <nav class="academic-tabs" aria-label="Academic management sections"><button type="button" class="active" aria-current="page">Classes</button><button type="button" id="openAcademicSubjects">Subjects</button><button type="button" id="openAcademicTeachers">Teachers</button></nav>
+      <section class="academic-section">
+        <div class="academic-section-heading"><div><h3>Class list</h3><p>Classes linked to student or financial records cannot be renamed or deleted.</p></div></div>
+        <form id="academicClassForm" class="academic-form-grid">
+          <input id="academicClassId" type="hidden">
+          <label>Class name<input id="academicClassName" class="form-control form-control-sm" maxlength="60" required></label>
+          <label>Display order<input id="academicClassOrder" type="number" min="0" step="1" class="form-control form-control-sm" required></label>
+          <div class="academic-form-actions"><button type="submit" class="btn btn-new btn-sm"><i class="bi bi-check2"></i> Save class</button><button type="button" id="cancelAcademicClassEdit" class="btn btn-outline-secondary btn-sm">Clear</button></div>
+        </form>
+        <div id="academicClassList" class="academic-table-wrap"></div>
+      </section>
+    </div>`
+
+  const form = main.querySelector('#academicClassForm')
+  const list = main.querySelector('#academicClassList')
+  const clearForm = () => {
+    form.reset()
+    main.querySelector('#academicClassId').value = ''
+    main.querySelector('#academicClassOrder').value = String(Math.max(0, ...academicClassesCache.map(item => Number(item.sort_order) || 0)) + 1)
+  }
+  const renderClassList = () => {
+    main.querySelector('#academicClassCount').textContent = `${academicClassesCache.length} classes`
+    list.innerHTML = `<table class="table table-sm academic-table"><thead><tr><th>Order</th><th>Class</th><th>Enrolled students</th><th>Status</th><th>Actions</th></tr></thead><tbody>${academicClassesCache.map(item => `<tr><td>${Number(item.sort_order)}</td><td><strong>${escapeHtml(item.name)}</strong></td><td>${Number(item.enrollment_count || 0)}</td><td>${item.is_active ? 'Active' : 'Inactive'}</td><td><div class="academic-row-actions"><button type="button" class="btn btn-sm btn-outline-secondary" data-edit-class="${item.id}" title="Edit class"><i class="bi bi-pencil"></i></button><button type="button" class="btn btn-sm btn-outline-secondary" data-toggle-class="${item.id}" data-active="${item.is_active ? '0' : '1'}">${item.is_active ? 'Deactivate' : 'Activate'}</button><button type="button" class="btn btn-sm btn-outline-danger" data-delete-class="${item.id}" title="Delete class"><i class="bi bi-trash"></i></button></div></td></tr>`).join('') || '<tr><td colspan="5">No classes yet.</td></tr>'}</tbody></table>`
+  }
+
+  form.addEventListener('submit', async event => {
+    event.preventDefault()
+    const id = main.querySelector('#academicClassId').value
+    const existing = academicClassesCache.find(item => String(item.id) === id)
+    const result = await window.api.saveAcademicClass({
+      id,
+      name: main.querySelector('#academicClassName').value,
+      sort_order: Number(main.querySelector('#academicClassOrder').value),
+      next_class_name: existing?.next_class_name || null
+    })
+    if (!result.success) return showToast(result.error || 'Unable to save class.', 'error')
+    showToast('Class saved.', 'success')
+    await loadAcademics()
+  })
+
+  list.addEventListener('click', async event => {
+    const button = event.target.closest('button')
+    if (!button) return
+    const item = academicClassesCache.find(entry => String(entry.id) === (button.dataset.editClass || button.dataset.toggleClass || button.dataset.deleteClass))
+    if (!item) return
+    if (button.dataset.editClass) {
+      main.querySelector('#academicClassId').value = item.id
+      main.querySelector('#academicClassName').value = item.name
+      main.querySelector('#academicClassOrder').value = item.sort_order
+      main.querySelector('#academicClassName').focus()
+      return
+    }
+    if (button.dataset.toggleClass) {
+      const result = await window.api.saveAcademicClass({ ...item, is_active: button.dataset.active === '1' })
+      if (!result.success) return showToast(result.error || 'Unable to update class.', 'error')
+      showToast('Class status updated.', 'success')
+      await loadAcademics()
+      return
+    }
+    const confirmed = await window.customConfirm({ title: 'Delete class?', message: `Delete ${item.name}? Classes with linked records cannot be deleted.`, okText: 'Delete class' })
+    if (!confirmed) return
+    const result = await window.api.deleteAcademicClass(item.id)
+    if (!result.success) return showToast(result.error || 'Unable to delete class.', 'error')
+    showToast('Class deleted.', 'success')
+    await loadAcademics()
+  })
+
+  main.querySelector('#cancelAcademicClassEdit').addEventListener('click', clearForm)
+  main.querySelector('#openAcademicSubjects').addEventListener('click', loadAcademicSubjects)
+  main.querySelector('#openAcademicTeachers').addEventListener('click', loadAcademicTeachers)
+  renderClassList()
+  clearForm()
+}
+
+async function loadAcademicSubjects() {
+  const main = document.getElementById('main')
+  main.innerHTML = '<div class="container-fluid py-4"><div class="finance-loading">Loading subjects...</div></div>'
+  academicSubjectsCache = await window.api.listAcademicSubjects()
+  main.innerHTML = `
+    <div class="container-fluid py-4 academic-screen">
+      <div class="page-header academic-page-header">
+        <div><div class="finance-eyebrow"><i class="bi bi-mortarboard"></i> Academic Management</div><h2>Subjects</h2><p class="small text-muted">Manage subject names, codes, and availability.</p></div>
+        <span class="finance-status" id="academicSubjectCount"></span>
+      </div>
+      <nav class="academic-tabs" aria-label="Academic management sections"><button type="button" id="openAcademicClasses">Classes</button><button type="button" class="active" aria-current="page">Subjects</button><button type="button" id="openAcademicTeachers">Teachers</button></nav>
+      <section class="academic-section">
+        <div class="academic-section-heading"><div><h3>Subject list</h3><p>Subjects assigned to teachers or timetables cannot be deleted; deactivate them instead.</p></div></div>
+        <form id="academicSubjectForm" class="academic-form-grid">
+          <input id="academicSubjectId" type="hidden">
+          <label>Subject name<input id="academicSubjectName" class="form-control form-control-sm" maxlength="100" required></label>
+          <label>Short code<input id="academicSubjectCode" class="form-control form-control-sm" maxlength="12" pattern="[A-Za-z0-9-]{2,12}" required></label>
+          <label class="academic-wide-field">Description<textarea id="academicSubjectDescription" class="form-control form-control-sm" rows="2" maxlength="500"></textarea></label>
+          <div class="academic-form-actions"><button type="submit" class="btn btn-new btn-sm"><i class="bi bi-check2"></i> Save subject</button><button type="button" id="cancelAcademicSubjectEdit" class="btn btn-outline-secondary btn-sm">Clear</button></div>
+        </form>
+        <div id="academicSubjectList" class="academic-table-wrap"></div>
+      </section>
+    </div>`
+
+  const form = main.querySelector('#academicSubjectForm')
+  const list = main.querySelector('#academicSubjectList')
+  const clearForm = () => {
+    form.reset()
+    main.querySelector('#academicSubjectId').value = ''
+  }
+  const renderSubjectList = () => {
+    main.querySelector('#academicSubjectCount').textContent = `${academicSubjectsCache.length} subjects`
+    list.innerHTML = `<table class="table table-sm academic-table"><thead><tr><th>Subject</th><th>Short code</th><th>Description</th><th>Teacher assignments</th><th>Timetable entries</th><th>Status</th><th>Actions</th></tr></thead><tbody>${academicSubjectsCache.map(subject => `<tr><td><strong>${escapeHtml(subject.name)}</strong></td><td><code>${escapeHtml(subject.short_code)}</code></td><td>${escapeHtml(subject.description || '—')}</td><td>${Number(subject.teacher_count || 0)}</td><td>${Number(subject.timetable_count || 0)}</td><td>${subject.is_active ? 'Active' : 'Inactive'}</td><td><div class="academic-row-actions"><button type="button" class="btn btn-sm btn-outline-secondary" data-edit-subject="${subject.id}" title="Edit subject"><i class="bi bi-pencil"></i></button><button type="button" class="btn btn-sm btn-outline-secondary" data-toggle-subject="${subject.id}" data-active="${subject.is_active ? '0' : '1'}">${subject.is_active ? 'Deactivate' : 'Activate'}</button><button type="button" class="btn btn-sm btn-outline-danger" data-delete-subject="${subject.id}" title="Delete subject"><i class="bi bi-trash"></i></button></div></td></tr>`).join('') || '<tr><td colspan="7">No subjects yet.</td></tr>'}</tbody></table>`
+  }
+
+  form.addEventListener('submit', async event => {
+    event.preventDefault()
+    const id = main.querySelector('#academicSubjectId').value
+    const existing = academicSubjectsCache.find(item => String(item.id) === id)
+    const result = await window.api.saveAcademicSubject({
+      id,
+      name: main.querySelector('#academicSubjectName').value,
+      short_code: main.querySelector('#academicSubjectCode').value,
+      description: main.querySelector('#academicSubjectDescription').value,
+      is_active: existing ? Boolean(existing.is_active) : true
+    })
+    if (!result.success) return showToast(result.error || 'Unable to save subject.', 'error')
+    showToast('Subject saved.', 'success')
+    await loadAcademicSubjects()
+  })
+
+  list.addEventListener('click', async event => {
+    const button = event.target.closest('button')
+    if (!button) return
+    const subject = academicSubjectsCache.find(item => String(item.id) === (button.dataset.editSubject || button.dataset.toggleSubject || button.dataset.deleteSubject))
+    if (!subject) return
+    if (button.dataset.editSubject) {
+      main.querySelector('#academicSubjectId').value = subject.id
+      main.querySelector('#academicSubjectName').value = subject.name
+      main.querySelector('#academicSubjectCode').value = subject.short_code
+      main.querySelector('#academicSubjectDescription').value = subject.description || ''
+      main.querySelector('#academicSubjectName').focus()
+      return
+    }
+    if (button.dataset.toggleSubject) {
+      const result = await window.api.saveAcademicSubject({ ...subject, is_active: button.dataset.active === '1' })
+      if (!result.success) return showToast(result.error || 'Unable to update subject.', 'error')
+      showToast('Subject status updated.', 'success')
+      await loadAcademicSubjects()
+      return
+    }
+    const confirmed = await window.customConfirm({ title: 'Delete subject?', message: `Delete ${subject.name}? Assigned subjects cannot be deleted.`, okText: 'Delete subject' })
+    if (!confirmed) return
+    const result = await window.api.deleteAcademicSubject(subject.id)
+    if (!result.success) return showToast(result.error || 'Unable to delete subject.', 'error')
+    showToast('Subject deleted.', 'success')
+    await loadAcademicSubjects()
+  })
+
+  main.querySelector('#cancelAcademicSubjectEdit').addEventListener('click', clearForm)
+  main.querySelector('#openAcademicClasses').addEventListener('click', loadAcademics)
+  main.querySelector('#openAcademicTeachers').addEventListener('click', loadAcademicTeachers)
+  renderSubjectList()
+}
+
+async function loadAcademicTeachers() {
+  const main = document.getElementById('main')
+  main.innerHTML = '<div class="container-fluid py-4"><div class="finance-loading">Loading teacher directory...</div></div>'
+  const [teachers, subjects] = await Promise.all([window.api.listAcademicTeachers(), window.api.listAcademicSubjects()])
+  academicTeachersCache = teachers || []
+  academicSubjectsCache = subjects || []
+  const subjectOptions = academicSubjectsCache.map(subject => `<option value="${subject.id}">${escapeHtml(subject.name)}${subject.is_active ? '' : ' (Inactive)'}</option>`).join('')
+  main.innerHTML = `
+    <div class="container-fluid py-4 academic-screen">
+      <div class="page-header academic-page-header">
+        <div><div class="finance-eyebrow"><i class="bi bi-mortarboard"></i> Academic Management</div><h2>Teacher Directory</h2><p class="small text-muted">Profiles, qualifications, subject expertise, and contact details.</p></div>
+        <span class="finance-status" id="academicTeacherCount"></span>
+      </div>
+      <nav class="academic-tabs" aria-label="Academic management sections"><button type="button" id="openAcademicClasses">Classes</button><button type="button" id="openAcademicSubjects">Subjects</button><button type="button" class="active" aria-current="page">Teachers</button></nav>
+      <div class="academic-two-column">
+        <section class="academic-section">
+          <div class="academic-section-heading"><div><h3>Teacher profile</h3><p>Assign a major subject and any additional subjects this teacher can teach.</p></div></div>
+          <form id="academicTeacherForm" class="academic-form-grid academic-teacher-form">
+            <input id="academicTeacherPhotoData" type="hidden">
+            <label>Teacher ID<input id="academicTeacherId" class="form-control form-control-sm" maxlength="30" pattern="[A-Za-z0-9-]{2,30}" placeholder="TCH-0001" required></label>
+            <label>Full name<input id="academicTeacherName" class="form-control form-control-sm" maxlength="160" required></label>
+            <label>Gender<select id="academicTeacherGender" class="form-select form-select-sm"><option value="">Not specified</option><option>Female</option><option>Male</option><option>Other</option></select></label>
+            <label>Qualification<input id="academicTeacherQualification" class="form-control form-control-sm" maxlength="160" placeholder="B.Ed., B.Sc., Diploma"></label>
+            <label>Major subject<select id="academicTeacherMajor" class="form-select form-select-sm" required><option value="">Select subject</option>${subjectOptions}</select></label>
+            <fieldset class="academic-subject-picker academic-wide-field"><legend>Additional subjects</legend><p>Select every other subject this teacher can teach. Their major subject is chosen above.</p><div id="academicTeacherOtherSubjects" class="academic-subject-checkboxes">${academicSubjectsCache.map(subject => `<label><input type="checkbox" class="academic-teacher-other-subject" value="${subject.id}" data-subject-label="${escapeHtml(subject.name)}" data-subject-active="${subject.is_active ? '1' : '0'}"><span>${escapeHtml(subject.name)}${subject.is_active ? '' : ' (Inactive)'}</span></label>`).join('') || '<span class="academic-subject-empty">No subjects available. Add subjects in the Subjects tab.</span>'}</div></fieldset>
+            <label>Phone<input id="academicTeacherPhone" type="tel" class="form-control form-control-sm" maxlength="60"></label>
+            <label>Email<input id="academicTeacherEmail" type="email" class="form-control form-control-sm" maxlength="254"></label>
+            <label>Date employed<input id="academicTeacherDateEmployed" type="date" class="form-control form-control-sm"></label>
+            <label>Employment status<select id="academicTeacherStatus" class="form-select form-select-sm"><option value="ACTIVE">Active</option><option value="INACTIVE">Inactive</option></select></label>
+            <label class="academic-photo-picker">Photo<input id="academicTeacherPhoto" type="file" accept="image/png,image/jpeg,image/webp" class="form-control form-control-sm"><span id="academicTeacherPhotoPreview" class="academic-avatar academic-avatar-large">Photo</span><button type="button" id="clearAcademicTeacherPhoto" class="btn btn-sm btn-outline-secondary">Remove photo</button></label>
+            <label class="academic-wide-field">Address<textarea id="academicTeacherAddress" class="form-control form-control-sm" rows="2" maxlength="500"></textarea></label>
+            <label class="academic-wide-field">Notes<textarea id="academicTeacherNotes" class="form-control form-control-sm" rows="2" maxlength="1000"></textarea></label>
+            <div class="academic-form-actions academic-wide-field"><button type="submit" class="btn btn-new btn-sm"><i class="bi bi-check2"></i> Save teacher</button><button type="button" id="clearAcademicTeacherForm" class="btn btn-outline-secondary btn-sm">Clear</button></div>
+          </form>
+        </section>
+        <section class="academic-section">
+          <div class="academic-section-heading"><div><h3>Teacher directory</h3><p>Search profiles and review their subjects and contact details.</p></div></div>
+          <label class="academic-search-label">Search teachers<input id="academicTeacherSearch" class="form-control form-control-sm" placeholder="Name, teacher ID, or major subject"></label>
+          <div id="academicTeacherDirectory" class="academic-table-wrap"></div>
+        </section>
+      </div>
+    </div>`
+
+  const form = main.querySelector('#academicTeacherForm')
+  const photoData = main.querySelector('#academicTeacherPhotoData')
+  const photoPreview = main.querySelector('#academicTeacherPhotoPreview')
+  const majorSelect = main.querySelector('#academicTeacherMajor')
+  const otherSubjectCheckboxes = () => [...main.querySelectorAll('.academic-teacher-other-subject')]
+  const updateOtherSubjectCheckboxes = () => otherSubjectCheckboxes().forEach(input => {
+    input.disabled = input.value === majorSelect.value
+    input.closest('label').classList.toggle('is-disabled', input.disabled)
+    const activeLabel = input.dataset.subjectActive === '1' ? input.dataset.subjectLabel : `${input.dataset.subjectLabel} (Inactive)`
+    input.nextElementSibling.textContent = input.disabled ? `${activeLabel} (Major subject)` : activeLabel
+    if (input.disabled) input.checked = false
+  })
+  const initialsFor = name => String(name || '').trim().split(/\s+/).map(part => part[0]).slice(0, 2).join('').toUpperCase()
+  const clearPhoto = () => {
+    photoData.value = ''
+    main.querySelector('#academicTeacherPhoto').value = ''
+    photoPreview.textContent = 'Photo'
+  }
+  const clearForm = () => {
+    form.reset()
+    main.querySelector('#academicTeacherId').readOnly = false
+    main.querySelector('#academicTeacherId').value = ''
+    photoData.value = ''
+    photoPreview.textContent = 'Photo'
+    updateOtherSubjectCheckboxes()
+  }
+  const renderDirectory = () => {
+    const query = main.querySelector('#academicTeacherSearch').value.trim().toLowerCase()
+    const teachers = academicTeachersCache.filter(teacher => !query || [teacher.teacher_id, teacher.full_name, teacher.specialization, teacher.qualification, teacher.phone, teacher.email, teacher.subjects].some(value => String(value || '').toLowerCase().includes(query)))
+    main.querySelector('#academicTeacherCount').textContent = `${teachers.length} of ${academicTeachersCache.length} teachers`
+    main.querySelector('#academicTeacherDirectory').innerHTML = `<table class="table table-sm academic-table"><thead><tr><th>Teacher</th><th>Qualification</th><th>Major subject</th><th>Other subjects</th><th>Contact</th><th>Status</th><th>Actions</th></tr></thead><tbody>${teachers.map(teacher => {
+      const assignedNames = String(teacher.subjects || '').split(', ').filter(Boolean)
+      const otherNames = assignedNames.filter(name => name !== teacher.specialization)
+      const contact = [teacher.phone, teacher.email].filter(Boolean).map(escapeHtml).join('<br>') || '—'
+      const photo = teacher.photo_data ? `<img src="${escapeHtml(teacher.photo_data)}" alt="${escapeHtml(teacher.full_name)}">` : escapeHtml(initialsFor(teacher.full_name))
+      return `<tr><td><div class="academic-person-cell"><span class="academic-avatar">${photo}</span><span><strong>${escapeHtml(teacher.full_name)}</strong><small>${escapeHtml(teacher.teacher_id)}</small></span></div></td><td>${escapeHtml(teacher.qualification || '—')}</td><td>${escapeHtml(teacher.specialization || '—')}</td><td>${escapeHtml(otherNames.join(', ') || '—')}</td><td>${contact}</td><td>${teacher.employment_status === 'ACTIVE' ? 'Active' : 'Inactive'}</td><td><div class="academic-row-actions"><button type="button" class="btn btn-sm btn-outline-secondary" data-edit-teacher="${escapeHtml(teacher.teacher_id)}" title="Edit teacher"><i class="bi bi-pencil"></i></button><button type="button" class="btn btn-sm btn-outline-secondary" data-toggle-teacher="${escapeHtml(teacher.teacher_id)}" data-active="${teacher.employment_status === 'ACTIVE' ? '0' : '1'}">${teacher.employment_status === 'ACTIVE' ? 'Deactivate' : 'Activate'}</button><button type="button" class="btn btn-sm btn-outline-danger" data-delete-teacher="${escapeHtml(teacher.teacher_id)}" title="Delete teacher"><i class="bi bi-trash"></i></button></div></td></tr>`
+    }).join('') || '<tr><td colspan="7">No teachers found.</td></tr>'}</tbody></table>`
+    main.querySelectorAll('#academicTeacherDirectory [data-edit-teacher]').forEach(button => button.addEventListener('click', () => {
+      const teacher = academicTeachersCache.find(item => item.teacher_id === button.dataset.editTeacher)
+      if (!teacher) return
+      main.querySelector('#academicTeacherId').value = teacher.teacher_id
+      main.querySelector('#academicTeacherId').readOnly = true
+      main.querySelector('#academicTeacherName').value = teacher.full_name
+      main.querySelector('#academicTeacherGender').value = teacher.gender || ''
+      main.querySelector('#academicTeacherQualification').value = teacher.qualification || ''
+      main.querySelector('#academicTeacherPhone').value = teacher.phone || ''
+      main.querySelector('#academicTeacherEmail').value = teacher.email || ''
+      main.querySelector('#academicTeacherDateEmployed').value = teacher.date_employed || ''
+      main.querySelector('#academicTeacherStatus').value = teacher.employment_status || 'ACTIVE'
+      main.querySelector('#academicTeacherAddress').value = teacher.address || ''
+      main.querySelector('#academicTeacherNotes').value = teacher.notes || ''
+      photoData.value = teacher.photo_data || ''
+      photoPreview.innerHTML = teacher.photo_data ? `<img src="${escapeHtml(teacher.photo_data)}" alt="Teacher photo">` : escapeHtml(initialsFor(teacher.full_name))
+      const assignedIds = String(teacher.subject_ids || '').split(',').filter(Boolean)
+      const major = academicSubjectsCache.find(subject => subject.name === teacher.specialization && assignedIds.includes(String(subject.id)))
+      majorSelect.value = major ? String(major.id) : ''
+      otherSubjectCheckboxes().forEach(input => { input.checked = assignedIds.includes(input.value) && input.value !== majorSelect.value })
+      updateOtherSubjectCheckboxes()
+      main.querySelector('#academicTeacherName').focus()
+    }))
+    main.querySelectorAll('#academicTeacherDirectory [data-toggle-teacher]').forEach(button => button.addEventListener('click', async () => {
+      const teacher = academicTeachersCache.find(item => item.teacher_id === button.dataset.toggleTeacher)
+      if (!teacher) return
+      const result = await window.api.saveAcademicTeacher({ ...teacher, is_active: undefined, employment_status: button.dataset.active === '1' ? 'ACTIVE' : 'INACTIVE', subject_ids: String(teacher.subject_ids || '').split(',').filter(Boolean).map(Number) })
+      if (!result.success) return showToast(result.error || 'Unable to update teacher status.', 'error')
+      showToast('Teacher status updated.', 'success')
+      await loadAcademicTeachers()
+    }))
+    main.querySelectorAll('#academicTeacherDirectory [data-delete-teacher]').forEach(button => button.addEventListener('click', async () => {
+      const teacher = academicTeachersCache.find(item => item.teacher_id === button.dataset.deleteTeacher)
+      if (!teacher) return
+      const confirmed = await window.customConfirm({ title: 'Delete teacher?', message: `Delete ${teacher.full_name}? Teachers with timetable entries cannot be deleted.`, okText: 'Delete teacher' })
+      if (!confirmed) return
+      const result = await window.api.deleteAcademicTeacher(teacher.teacher_id)
+      if (!result.success) return showToast(result.error || 'Unable to delete teacher.', 'error')
+      showToast('Teacher deleted.', 'success')
+      await loadAcademicTeachers()
+    }))
+  }
+
+  main.querySelector('#academicTeacherSearch').addEventListener('input', renderDirectory)
+  majorSelect.addEventListener('change', updateOtherSubjectCheckboxes)
+  main.querySelector('#academicTeacherPhoto').addEventListener('change', event => {
+    const file = event.target.files[0]
+    if (!file) return
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 3 * 1024 * 1024) {
+      showToast('Choose a PNG, JPG, or WebP photo smaller than 3 MB.', 'error')
+      event.target.value = ''
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => {
+      photoData.value = reader.result
+      photoPreview.innerHTML = `<img src="${reader.result}" alt="Teacher photo">`
+    }
+    reader.readAsDataURL(file)
+  })
+  main.querySelector('#clearAcademicTeacherPhoto').addEventListener('click', clearPhoto)
+  main.querySelector('#clearAcademicTeacherForm').addEventListener('click', clearForm)
+  form.addEventListener('submit', async event => {
+    event.preventDefault()
+    const major = academicSubjectsCache.find(subject => String(subject.id) === majorSelect.value)
+    if (!major) return showToast('Select a major subject.', 'error')
+    const subjectIds = [...new Set([Number(major.id), ...otherSubjectCheckboxes().filter(input => input.checked && !input.disabled).map(input => Number(input.value))])]
+    const result = await window.api.saveAcademicTeacher({
+      id: academicTeachersCache.find(item => item.teacher_id === main.querySelector('#academicTeacherId').value)?.id,
+      teacher_id: main.querySelector('#academicTeacherId').value,
+      full_name: main.querySelector('#academicTeacherName').value,
+      gender: main.querySelector('#academicTeacherGender').value,
+      qualification: main.querySelector('#academicTeacherQualification').value,
+      specialization: major.name,
+      subject_ids: subjectIds,
+      phone: main.querySelector('#academicTeacherPhone').value,
+      email: main.querySelector('#academicTeacherEmail').value,
+      date_employed: main.querySelector('#academicTeacherDateEmployed').value,
+      employment_status: main.querySelector('#academicTeacherStatus').value,
+      address: main.querySelector('#academicTeacherAddress').value,
+      notes: main.querySelector('#academicTeacherNotes').value,
+      photo_data: photoData.value
+    })
+    if (!result.success) return showToast(result.error || 'Unable to save teacher.', 'error')
+    showToast('Teacher saved.', 'success')
+    await loadAcademicTeachers()
+  })
+  main.querySelector('#openAcademicClasses').addEventListener('click', loadAcademics)
+  main.querySelector('#openAcademicSubjects').addEventListener('click', loadAcademicSubjects)
+  renderDirectory()
+}
+
+async function renderAcademicTab(tab) {
+  document.querySelectorAll('[data-academic-tab]').forEach(button => button.classList.toggle('active', button.dataset.academicTab === tab))
+  const panel = document.getElementById('academicPanel')
+  if (!panel) return
+  if (tab === 'years') await renderAcademicYearsPanel(panel)
+  else if (tab === 'staff') await renderAcademicStaffPanel(panel)
+  else if (tab === 'timetable') await renderAcademicTimetablePanel(panel)
+  else if (tab === 'calendar') await renderAcademicCalendarPanel(panel)
+}
+
+function academicYearOptions(selectedId = '') {
+  return academicYearsCache.map(year => `<option value="${year.id}" ${String(year.id) === String(selectedId) ? 'selected' : ''}>${escapeHtml(year.name)}</option>`).join('')
+}
+
+function academicClassOptions(selected = '', includeInactive = false) {
+  return academicClassesCache.filter(item => includeInactive || item.is_active).map(item => `<option value="${escapeHtml(item.name)}" ${item.name === selected ? 'selected' : ''}>${escapeHtml(item.name)}</option>`).join('')
+}
+
+async function renderAcademicYearsPanel(panel) {
+  const currentYear = academicYearsCache.find(year => year.is_current)
+  panel.innerHTML = `
+    <section class="academic-overview-strip"><div><span>Current academic year</span><strong>${escapeHtml(currentYear?.name || 'Not set')}</strong></div><div><span>Classes</span><strong>${academicClassesCache.length}</strong></div><div><span>Enrolled records</span><strong>${academicYearsCache.reduce((sum, year) => sum + Number(year.enrollment_count || 0), 0)}</strong></div></section>
+    <div class="academic-two-column">
+      <section class="academic-section"><div class="academic-section-heading"><div><h3>Academic years</h3><p>Keep prior-year enrollments and financial periods available.</p></div></div>
+        <form id="academicYearForm" class="academic-form-grid"><input id="academicYearId" type="hidden"><label>Year label<input id="academicYearName" class="form-control form-control-sm" placeholder="2026/2027" maxlength="40" required></label><label>Start date<input id="academicYearStart" type="date" class="form-control form-control-sm"></label><label>End date<input id="academicYearEnd" type="date" class="form-control form-control-sm"></label><button class="btn btn-new btn-sm" type="submit"><i class="bi bi-plus-lg"></i> Save year</button></form>
+        <div class="academic-table-wrap"><table class="table table-sm academic-table"><thead><tr><th>Year</th><th>Dates</th><th>Status</th><th>Enrollments</th><th>Actions</th></tr></thead><tbody>${academicYearsCache.map(year => `<tr><td><strong>${escapeHtml(year.name)}</strong></td><td>${escapeHtml(year.starts_on || '—')} ${year.ends_on ? `to ${escapeHtml(year.ends_on)}` : ''}</td><td><span class="academic-status ${String(year.status).toLowerCase()}">${escapeHtml(year.status)}</span></td><td>${Number(year.enrollment_count || 0)}</td><td><div class="academic-row-actions"><button type="button" class="btn btn-sm btn-outline-secondary" data-edit-year="${year.id}" title="Edit year"><i class="bi bi-pencil"></i></button>${year.status !== 'CURRENT' && year.status !== 'CLOSED' ? `<button type="button" class="btn btn-sm btn-outline-primary" data-year-status="CURRENT" data-year-id="${year.id}">Set current</button>` : ''}${year.status !== 'CLOSED' ? `<button type="button" class="btn btn-sm btn-outline-secondary" data-year-status="CLOSED" data-year-id="${year.id}">Close</button>` : ''}</div></td></tr>`).join('') || '<tr><td colspan="5">No academic years configured.</td></tr>'}</tbody></table></div>
+      </section>
+      <section class="academic-section"><div class="academic-section-heading"><div><h3>Classes &amp; progression</h3><p>Set the next class explicitly; existing records prevent unsafe renaming.</p></div></div>
+        <form id="academicClassForm" class="academic-form-grid"><input id="academicClassId" type="hidden"><label>Class name<input id="academicClassName" class="form-control form-control-sm" maxlength="60" required></label><label>Order<input id="academicClassOrder" class="form-control form-control-sm" type="number" min="0" step="1" value="${academicClassesCache.length + 1}" required></label><label>Next class<select id="academicClassNext" class="form-select form-select-sm"><option value="">No next class</option>${academicClassOptions()}</select></label><button class="btn btn-new btn-sm" type="submit"><i class="bi bi-plus-lg"></i> Save class</button></form>
+        <div class="academic-table-wrap"><table class="table table-sm academic-table"><thead><tr><th>Order</th><th>Class</th><th>Promotes to</th><th>Status</th><th></th></tr></thead><tbody>${academicClassesCache.map(item => `<tr><td>${item.sort_order}</td><td><strong>${escapeHtml(item.name)}</strong></td><td>${escapeHtml(item.next_class_name || '—')}</td><td>${item.is_active ? 'Active' : 'Inactive'}</td><td><button type="button" class="btn btn-sm btn-outline-secondary" data-edit-class="${item.id}" title="Edit class"><i class="bi bi-pencil"></i></button><button type="button" class="btn btn-sm btn-outline-secondary" data-toggle-class="${item.id}" data-active="${item.is_active ? '0' : '1'}">${item.is_active ? 'Deactivate' : 'Activate'}</button></td></tr>`).join('') || '<tr><td colspan="5">No classes configured.</td></tr>'}</tbody></table></div>
+      </section>
     </div>
-  `
+    <section class="academic-section academic-promotion-section"><div class="academic-section-heading"><div><h3>Promotion &amp; retention</h3><p>Preview individual, selected, or whole-class decisions before applying them.</p></div></div>
+      <div class="academic-filter-row"><label>From year<select id="promotionSourceYear" class="form-select form-select-sm">${academicYearOptions(currentYear?.id)}</select></label><label>To year<select id="promotionTargetYear" class="form-select form-select-sm"><option value="">Select year</option>${academicYearsCache.filter(year => year.id !== currentYear?.id && year.status !== 'CLOSED').map(year => `<option value="${year.id}">${escapeHtml(year.name)}</option>`).join('')}</select></label><label>Class<select id="promotionClass" class="form-select form-select-sm"><option value="">All classes</option>${academicClassOptions()}</select></label><button type="button" class="btn btn-outline-primary btn-sm" id="loadPromotionRoster"><i class="bi bi-arrow-repeat"></i> Load roster</button></div>
+      <div id="promotionRoster" class="academic-table-wrap"></div><div id="promotionPreview" class="academic-preview" hidden></div>
+    </section>
+    <section class="academic-section"><div class="academic-section-heading"><div><h3>Promotion history</h3><p>Recorded outcomes by school year.</p></div></div><div id="promotionHistoryTable" class="academic-table-wrap"></div></section>`
+  panel.querySelector('#academicYearForm').addEventListener('submit', async event => {
+    event.preventDefault()
+    const result = await window.api.saveAcademicYear({ id: panel.querySelector('#academicYearId').value, name: panel.querySelector('#academicYearName').value, starts_on: panel.querySelector('#academicYearStart').value, ends_on: panel.querySelector('#academicYearEnd').value })
+    if (!result.success) return showToast(result.error || 'Unable to save academic year.', 'error')
+    await loadAcademics('years')
+  })
+  panel.querySelectorAll('[data-edit-year]').forEach(button => button.addEventListener('click', () => {
+    const year = academicYearsCache.find(item => String(item.id) === button.dataset.editYear)
+    if (!year) return
+    panel.querySelector('#academicYearId').value = year.id
+    panel.querySelector('#academicYearName').value = year.name
+    panel.querySelector('#academicYearStart').value = year.starts_on || ''
+    panel.querySelector('#academicYearEnd').value = year.ends_on || ''
+  }))
+  panel.querySelectorAll('[data-year-status]').forEach(button => button.addEventListener('click', async () => {
+    const result = await window.api.setAcademicYearStatus({ id: button.dataset.yearId, status: button.dataset.yearStatus })
+    if (!result.success) return showToast(result.error || 'Unable to update year status.', 'error')
+    await loadAcademics('years')
+  }))
+  panel.querySelector('#academicClassForm').addEventListener('submit', async event => {
+    event.preventDefault()
+    const result = await window.api.saveAcademicClass({ id: panel.querySelector('#academicClassId').value, name: panel.querySelector('#academicClassName').value, sort_order: Number(panel.querySelector('#academicClassOrder').value), next_class_name: panel.querySelector('#academicClassNext').value })
+    if (!result.success) return showToast(result.error || 'Unable to save class.', 'error')
+    await loadAcademics('years')
+  })
+  panel.querySelectorAll('[data-edit-class]').forEach(button => button.addEventListener('click', () => {
+    const item = academicClassesCache.find(entry => String(entry.id) === button.dataset.editClass)
+    if (!item) return
+    panel.querySelector('#academicClassId').value = item.id
+    panel.querySelector('#academicClassName').value = item.name
+    panel.querySelector('#academicClassOrder').value = item.sort_order
+    panel.querySelector('#academicClassNext').value = item.next_class_name || ''
+  }))
+  panel.querySelectorAll('[data-toggle-class]').forEach(button => button.addEventListener('click', async () => {
+    const item = academicClassesCache.find(entry => String(entry.id) === button.dataset.toggleClass)
+    const result = await window.api.saveAcademicClass({ ...item, is_active: button.dataset.active === '1' })
+    if (!result.success) return showToast(result.error || 'Unable to update class.', 'error')
+    await loadAcademics('years')
+  }))
+  panel.querySelector('#loadPromotionRoster').addEventListener('click', () => loadPromotionRoster(panel))
+  await renderPromotionHistory(panel)
+}
+
+async function loadPromotionRoster(panel) {
+  const sourceId = panel.querySelector('#promotionSourceYear').value
+  const targetId = panel.querySelector('#promotionTargetYear').value
+  const className = panel.querySelector('#promotionClass').value
+  const rosterElement = panel.querySelector('#promotionRoster')
+  const preview = panel.querySelector('#promotionPreview')
+  preview.hidden = true
+  if (!sourceId || !targetId || sourceId === targetId) { rosterElement.innerHTML = '<p class="text-danger">Choose different source and destination years.</p>'; return }
+  const result = await window.api.getEnrollmentRoster({ academic_year_id: sourceId, class_name: className })
+  if (!result.success) { rosterElement.innerHTML = `<p class="text-danger">${escapeHtml(result.error)}</p>`; return }
+  const selectableClasses = academicClassesCache.filter(item => item.is_active)
+  rosterElement.innerHTML = `<table class="table table-sm academic-table"><thead><tr><th><input type="checkbox" id="promotionSelectAll" aria-label="Select all students"></th><th>Student</th><th>Student ID</th><th>Current class</th><th>Outcome</th><th>Next class</th></tr></thead><tbody>${result.students.map(student => { const progression = selectableClasses.find(item => item.name === student.class_name)?.next_class_name || student.class_name; return `<tr data-promotion-student="${escapeHtml(student.student_id)}"><td><input type="checkbox" class="promotion-select" checked aria-label="Select ${escapeHtml(student.full_name)}"></td><td>${escapeHtml(student.full_name)}</td><td><code>${escapeHtml(student.student_id)}</code></td><td>${escapeHtml(student.class_name)}</td><td><select class="form-select form-select-sm promotion-outcome"><option value="PROMOTED">Promote</option><option value="RETAINED">Retain</option><option value="FAILED">Failed</option><option value="TRANSFERRED">Transferred</option><option value="WITHDRAWN">Withdrawn</option></select></td><td><select class="form-select form-select-sm promotion-destination">${selectableClasses.map(item => `<option value="${escapeHtml(item.name)}" ${item.name === progression ? 'selected' : ''}>${escapeHtml(item.name)}</option>`).join('')}</select></td></tr>`}).join('') || '<tr><td colspan="6">No enrolled students in this selection.</td></tr>'}</tbody></table><div class="academic-form-actions"><button type="button" class="btn btn-outline-primary btn-sm" id="previewPromotions"><i class="bi bi-eye"></i> Preview selected</button></div>`
+  panel.querySelector('#promotionSelectAll')?.addEventListener('change', event => panel.querySelectorAll('.promotion-select').forEach(input => { input.checked = event.target.checked }))
+  panel.querySelector('#previewPromotions')?.addEventListener('click', () => showPromotionPreview(panel, result.students))
+}
+
+function showPromotionPreview(panel, roster) {
+  const selected = [...panel.querySelectorAll('[data-promotion-student]')].filter(row => row.querySelector('.promotion-select').checked)
+  const preview = panel.querySelector('#promotionPreview')
+  if (!selected.length) { showToast('Select at least one student.', 'error'); return }
+  const decisions = selected.map(row => ({ student_id: row.dataset.promotionStudent, outcome: row.querySelector('.promotion-outcome').value, class_name: row.querySelector('.promotion-destination').value }))
+  preview.hidden = false
+  preview.innerHTML = `<h4>Promotion preview</h4><div class="academic-table-wrap"><table class="table table-sm academic-table"><thead><tr><th>Student</th><th>Student ID</th><th>From</th><th>Outcome</th><th>To</th></tr></thead><tbody>${decisions.map(decision => { const student = roster.find(item => item.student_id === decision.student_id); return `<tr><td>${escapeHtml(student.full_name)}</td><td>${escapeHtml(decision.student_id)}</td><td>${escapeHtml(student.class_name)}</td><td>${escapeHtml(decision.outcome)}</td><td>${['TRANSFERRED', 'WITHDRAWN'].includes(decision.outcome) ? '—' : escapeHtml(decision.class_name)}</td></tr>`}).join('')}</tbody></table></div><div class="academic-form-actions"><button type="button" id="confirmPromotionBatch" class="btn btn-new btn-sm"><i class="bi bi-check2"></i> Confirm promotion</button></div>`
+  preview.querySelector('#confirmPromotionBatch').addEventListener('click', async () => {
+    const confirmed = await window.customConfirm({ title: 'Apply promotion decisions?', message: `${decisions.length} enrollment decision(s) will be recorded. Student IDs and prior-year financial records will remain unchanged.`, okText: 'Apply decisions' })
+    if (!confirmed) return
+    const result = await window.api.promoteStudents({ from_academic_year_id: panel.querySelector('#promotionSourceYear').value, to_academic_year_id: panel.querySelector('#promotionTargetYear').value, decisions })
+    if (!result.success) return showToast(result.error || 'Promotion could not be applied.', 'error')
+    showToast(`${result.processed} enrollment decision(s) recorded.`, 'success')
+    await loadAcademics('years')
+  })
+}
+
+async function renderPromotionHistory(panel) {
+  const history = await window.api.listPromotionHistory({})
+  const target = panel.querySelector('#promotionHistoryTable')
+  target.innerHTML = `<table class="table table-sm academic-table"><thead><tr><th>Date</th><th>Student</th><th>Student ID</th><th>From</th><th>To</th><th>Outcome</th></tr></thead><tbody>${(history || []).map(item => `<tr><td>${escapeHtml(String(item.created_at).slice(0, 10))}</td><td>${escapeHtml(item.full_name)}</td><td><code>${escapeHtml(item.student_id)}</code></td><td>${escapeHtml(item.from_academic_year)} · ${escapeHtml(item.from_class_name)}</td><td>${escapeHtml(item.to_academic_year)} · ${escapeHtml(item.to_class_name)}</td><td>${escapeHtml(item.outcome)}</td></tr>`).join('') || '<tr><td colspan="6">No promotion history yet.</td></tr>'}</tbody></table>`
+}
+
+async function renderAcademicStaffPanel(panel) {
+  academicTeachersCache = await window.api.listTeachers('')
+  academicSubjectsCache = await window.api.listSubjects(true)
+  panel.innerHTML = `
+    <div class="academic-two-column">
+      <section class="academic-section"><div class="academic-section-heading"><div><h3>Teacher directory</h3><p>Profiles, offline photos, and subject assignments.</p></div></div>
+        <form id="academicTeacherForm" class="academic-form-grid academic-teacher-form"><input id="teacherPhotoData" type="hidden"><label>Teacher ID<input id="teacherId" class="form-control form-control-sm" placeholder="TCH-0001" required></label><label>Full name<input id="teacherName" class="form-control form-control-sm" required></label><label>Gender<select id="teacherGender" class="form-select form-select-sm"><option value="">Not specified</option><option>Female</option><option>Male</option></select></label><label>Phone<input id="teacherPhone" class="form-control form-control-sm"></label><label>Email<input id="teacherEmail" type="email" class="form-control form-control-sm"></label><label>Qualification<input id="teacherQualification" class="form-control form-control-sm"></label><label>Specialization<input id="teacherSpecialization" class="form-control form-control-sm"></label><label>Date employed<input id="teacherDateEmployed" type="date" class="form-control form-control-sm"></label><label>Employment status<select id="teacherStatus" class="form-select form-select-sm"><option value="ACTIVE">Active</option><option value="INACTIVE">Inactive</option></select></label><label class="academic-subject-picker">Subjects<select id="teacherSubjectIds" class="form-select form-select-sm" multiple size="4">${academicSubjectsCache.map(subject => `<option value="${subject.id}">${escapeHtml(subject.name)}</option>`).join('')}</select></label><label class="academic-photo-picker">Photo<input id="teacherPhoto" type="file" accept="image/png,image/jpeg,image/webp" class="form-control form-control-sm"><span id="teacherPhotoPreview" class="academic-avatar academic-avatar-large">Photo</span></label><label class="academic-wide-field">Address<textarea id="teacherAddress" class="form-control form-control-sm" rows="2"></textarea></label><label class="academic-wide-field">Notes<textarea id="teacherNotes" class="form-control form-control-sm" rows="2"></textarea></label><div class="academic-form-actions academic-wide-field"><button type="submit" class="btn btn-new btn-sm"><i class="bi bi-check2"></i> Save teacher</button><button type="reset" class="btn btn-outline-secondary btn-sm" id="resetTeacherForm">Clear</button></div></form>
+        <label class="academic-search-label">Search teachers<input id="teacherSearch" class="form-control form-control-sm" placeholder="Name, ID, or specialization"></label>
+        <div id="teacherDirectory" class="academic-table-wrap"></div>
+      </section>
+      <section class="academic-section"><div class="academic-section-heading"><div><h3>Subjects</h3><p>Maintain the subject catalogue and codes.</p></div></div>
+        <form id="academicSubjectForm" class="academic-form-grid"><input id="subjectId" type="hidden"><label>Subject name<input id="subjectName" class="form-control form-control-sm" maxlength="100" required></label><label>Short code<input id="subjectCode" class="form-control form-control-sm" maxlength="12" required></label><label class="academic-wide-field">Description<input id="subjectDescription" class="form-control form-control-sm"></label><button class="btn btn-new btn-sm" type="submit"><i class="bi bi-plus-lg"></i> Save subject</button></form>
+        <div class="academic-table-wrap"><table class="table table-sm academic-table"><thead><tr><th>Subject</th><th>Code</th><th>Teachers</th><th>Status</th><th></th></tr></thead><tbody>${academicSubjectsCache.map(subject => `<tr><td><strong>${escapeHtml(subject.name)}</strong></td><td><code>${escapeHtml(subject.short_code)}</code></td><td>${subject.teacher_count || 0}</td><td>${subject.is_active ? 'Active' : 'Inactive'}</td><td><button type="button" class="btn btn-sm btn-outline-secondary" data-edit-subject="${subject.id}" title="Edit subject"><i class="bi bi-pencil"></i></button><button type="button" class="btn btn-sm btn-outline-secondary" data-toggle-subject="${subject.id}" data-active="${subject.is_active ? '0' : '1'}">${subject.is_active ? 'Deactivate' : 'Activate'}</button></td></tr>`).join('') || '<tr><td colspan="5">No subjects configured.</td></tr>'}</tbody></table></div>
+      </section>
+    </div>`
+  const renderDirectory = async query => {
+    academicTeachersCache = await window.api.listTeachers(query)
+    const directory = panel.querySelector('#teacherDirectory')
+    directory.innerHTML = `<table class="table table-sm academic-table"><thead><tr><th>Teacher</th><th>Specialization</th><th>Subjects</th><th>Status</th><th></th></tr></thead><tbody>${academicTeachersCache.map(teacher => `<tr><td><div class="academic-person-cell"><span class="academic-avatar">${teacher.photo_data ? `<img src="${escapeHtml(teacher.photo_data)}" alt="${escapeHtml(teacher.full_name)}" data-teacher-avatar>` : escapeHtml(teacher.full_name.split(/\\s+/).map(name => name[0]).slice(0, 2).join('').toUpperCase())}</span><span><strong>${escapeHtml(teacher.full_name)}</strong><small>${escapeHtml(teacher.teacher_id)}</small></span></div></td><td>${escapeHtml(teacher.specialization || '—')}</td><td>${escapeHtml(teacher.subjects || '—')}</td><td>${teacher.employment_status === 'ACTIVE' ? 'Active' : 'Inactive'}</td><td><button type="button" class="btn btn-sm btn-outline-secondary" data-edit-teacher="${escapeHtml(teacher.teacher_id)}" title="Edit profile"><i class="bi bi-pencil"></i></button></td></tr>`).join('') || '<tr><td colspan="5">No teachers found.</td></tr>'}</tbody></table>`
+    directory.querySelectorAll('[data-teacher-avatar]').forEach(image => image.addEventListener('error', () => { image.remove() }, { once: true }))
+    directory.querySelectorAll('[data-edit-teacher]').forEach(button => button.addEventListener('click', () => {
+      const teacher = academicTeachersCache.find(item => item.teacher_id === button.dataset.editTeacher)
+      if (!teacher) return
+      panel.querySelector('#teacherId').value = teacher.teacher_id
+      panel.querySelector('#teacherId').readOnly = true
+      panel.querySelector('#teacherName').value = teacher.full_name
+      panel.querySelector('#teacherGender').value = teacher.gender || ''
+      panel.querySelector('#teacherPhone').value = teacher.phone || ''
+      panel.querySelector('#teacherEmail').value = teacher.email || ''
+      panel.querySelector('#teacherQualification').value = teacher.qualification || ''
+      panel.querySelector('#teacherSpecialization').value = teacher.specialization || ''
+      panel.querySelector('#teacherDateEmployed').value = teacher.date_employed || ''
+      panel.querySelector('#teacherStatus').value = teacher.employment_status
+      panel.querySelector('#teacherAddress').value = teacher.address || ''
+      panel.querySelector('#teacherNotes').value = teacher.notes || ''
+      panel.querySelector('#teacherPhotoData').value = teacher.photo_data || ''
+      panel.querySelectorAll('#teacherSubjectIds option').forEach(option => { option.selected = (teacher.subject_ids || '').split(',').includes(option.value) })
+      panel.querySelector('#teacherPhotoPreview').innerHTML = teacher.photo_data ? `<img src="${escapeHtml(teacher.photo_data)}" alt="Teacher photo">` : 'Photo'
+    }))
+  }
+  panel.querySelector('#teacherPhoto').addEventListener('change', event => {
+    const file = event.target.files[0]
+    if (!file) return
+    if (file.size > 3 * 1024 * 1024) { showToast('Choose an image smaller than 3 MB.', 'error'); event.target.value = ''; return }
+    const reader = new FileReader()
+    reader.onload = () => { panel.querySelector('#teacherPhotoData').value = reader.result; panel.querySelector('#teacherPhotoPreview').innerHTML = `<img src="${reader.result}" alt="Teacher photo">` }
+    reader.readAsDataURL(file)
+  })
+  panel.querySelector('#academicTeacherForm').addEventListener('submit', async event => {
+    event.preventDefault()
+    const result = await window.api.saveTeacher({ teacher_id: panel.querySelector('#teacherId').value, full_name: panel.querySelector('#teacherName').value, photo_data: panel.querySelector('#teacherPhotoData').value, gender: panel.querySelector('#teacherGender').value, phone: panel.querySelector('#teacherPhone').value, email: panel.querySelector('#teacherEmail').value, qualification: panel.querySelector('#teacherQualification').value, specialization: panel.querySelector('#teacherSpecialization').value, date_employed: panel.querySelector('#teacherDateEmployed').value, employment_status: panel.querySelector('#teacherStatus').value, address: panel.querySelector('#teacherAddress').value, notes: panel.querySelector('#teacherNotes').value, subject_ids: [...panel.querySelector('#teacherSubjectIds').selectedOptions].map(option => Number(option.value)) })
+    if (!result.success) return showToast(result.error || 'Unable to save teacher.', 'error')
+    await loadAcademics('staff')
+  })
+  panel.querySelector('#teacherSearch').addEventListener('input', event => renderDirectory(event.target.value))
+  panel.querySelector('#resetTeacherForm').addEventListener('click', () => { panel.querySelector('#teacherId').readOnly = false; panel.querySelector('#teacherPhotoData').value = ''; panel.querySelector('#teacherPhotoPreview').textContent = 'Photo' })
+  panel.querySelector('#academicSubjectForm').addEventListener('submit', async event => {
+    event.preventDefault()
+    const result = await window.api.saveSubject({ id: panel.querySelector('#subjectId').value, name: panel.querySelector('#subjectName').value, short_code: panel.querySelector('#subjectCode').value, description: panel.querySelector('#subjectDescription').value })
+    if (!result.success) return showToast(result.error || 'Unable to save subject.', 'error')
+    await loadAcademics('staff')
+  })
+  panel.querySelectorAll('[data-edit-subject]').forEach(button => button.addEventListener('click', () => {
+    const subject = academicSubjectsCache.find(item => String(item.id) === button.dataset.editSubject)
+    if (!subject) return
+    panel.querySelector('#subjectId').value = subject.id
+    panel.querySelector('#subjectName').value = subject.name
+    panel.querySelector('#subjectCode').value = subject.short_code
+    panel.querySelector('#subjectDescription').value = subject.description || ''
+  }))
+  panel.querySelectorAll('[data-toggle-subject]').forEach(button => button.addEventListener('click', async () => {
+    const subject = academicSubjectsCache.find(item => String(item.id) === button.dataset.toggleSubject)
+    const result = await window.api.saveSubject({ ...subject, is_active: button.dataset.active === '1' })
+    if (!result.success) return showToast(result.error || 'Unable to update subject.', 'error')
+    await loadAcademics('staff')
+  }))
+  await renderDirectory('')
+}
+
+function formatAcademicISODate(date) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+const academicWeekdayLabels = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
+
+async function renderAcademicTimetablePanel(panel) {
+  const currentYear = academicYearsCache.find(year => year.is_current) || academicYearsCache[0]
+  const teacherOptions = academicTeachersCache.map(teacher => `<option value="${escapeHtml(teacher.teacher_id)}">${escapeHtml(teacher.full_name)}</option>`).join('') || '<option value="">No teachers available</option>'
+  const subjectOptions = academicSubjectsCache.filter(subject => subject.is_active !== false).map(subject => `<option value="${subject.id}">${escapeHtml(subject.name)} (${escapeHtml(subject.short_code)})</option>`).join('') || '<option value="">No subjects available</option>'
+  const classOptions = academicClassOptions('', true)
+
+  panel.innerHTML = `
+    <div class="academic-two-column">
+      <section class="academic-section">
+        <div class="academic-section-heading">
+          <div><h3>Weekly timetable</h3><p>Check day, class, teacher, and subject coverage in one view.</p></div>
+        </div>
+        <div class="academic-filter-row">
+          <label>Academic year<select id="timetableYearFilter" class="form-select form-select-sm">${academicYearOptions(currentYear?.id || '')}</select></label>
+          <label>Class<select id="timetableClassFilter" class="form-select form-select-sm"><option value="">All classes</option>${classOptions}</select></label>
+          <label>Teacher<select id="timetableTeacherFilter" class="form-select form-select-sm"><option value="">All teachers</option>${teacherOptions}</select></label>
+          <label>Subject<select id="timetableSubjectFilter" class="form-select form-select-sm"><option value="">All subjects</option>${subjectOptions}</select></label>
+        </div>
+        <div id="timetableList" class="academic-table-wrap"></div>
+      </section>
+      <section class="academic-section">
+        <div class="academic-section-heading">
+          <div><h3>Schedule entry</h3><p>Keep room and period assignments conflict-free.</p></div>
+        </div>
+        <form id="academicTimetableForm" class="academic-form-grid">
+          <input id="timetableEntryId" type="hidden">
+          <label>Academic year<select id="timetableEntryYear" class="form-select form-select-sm" required>${academicYearOptions(currentYear?.id || '')}</select></label>
+          <label>Class<select id="timetableEntryClass" class="form-select form-select-sm" required>${classOptions}</select></label>
+          <label>Day<select id="timetableEntryDay" class="form-select form-select-sm" required>${[1, 2, 3, 4, 5].map(day => `<option value="${day}">${academicWeekdayLabels[day]}</option>`).join('')}</select></label>
+          <label>Period number<input id="timetableEntryPeriod" type="number" min="1" max="12" step="1" class="form-control form-control-sm" required></label>
+          <label>Start time<input id="timetableEntryStart" type="time" class="form-control form-control-sm" required></label>
+          <label>End time<input id="timetableEntryEnd" type="time" class="form-control form-control-sm" required></label>
+          <label>Teacher<select id="timetableEntryTeacher" class="form-select form-select-sm" required>${teacherOptions}</select></label>
+          <label>Subject<select id="timetableEntrySubject" class="form-select form-select-sm" required>${subjectOptions}</select></label>
+          <label>Room<input id="timetableEntryRoom" class="form-control form-control-sm" maxlength="60" placeholder="Lab 2"></label>
+          <div class="academic-form-actions academic-wide-field">
+            <button type="submit" class="btn btn-new btn-sm"><i class="bi bi-check2"></i> Save schedule</button>
+            <button type="button" id="resetTimetableForm" class="btn btn-outline-secondary btn-sm">Clear</button>
+          </div>
+        </form>
+      </section>
+    </div>`
+
+  const refreshTimetable = async () => {
+    const filters = {
+      academic_year_id: panel.querySelector('#timetableYearFilter').value || currentYear?.id || 0,
+      class_name: panel.querySelector('#timetableClassFilter').value || '',
+      teacher_id: panel.querySelector('#timetableTeacherFilter').value || '',
+      subject_id: panel.querySelector('#timetableSubjectFilter').value || 0
+    }
+    const entries = await window.api.listTimetableEntries(filters)
+    const rows = Array.isArray(entries) ? entries : []
+    panel.querySelector('#timetableList').innerHTML = `
+      <table class="table table-sm academic-table">
+        <thead><tr><th>Day</th><th>Period</th><th>Class</th><th>Subject</th><th>Teacher</th><th>Time</th><th>Room</th><th></th></tr></thead>
+        <tbody>${rows.map(entry => `
+          <tr>
+            <td>${escapeHtml(academicWeekdayLabels[Number(entry.day_of_week)] || 'Day')}</td>
+            <td>${Number(entry.period_number)}</td>
+            <td>${escapeHtml(entry.class_name)}</td>
+            <td><strong>${escapeHtml(entry.subject_name)}</strong><small>${escapeHtml(entry.subject_code)}</small></td>
+            <td>${escapeHtml(entry.teacher_name)}</td>
+            <td>${escapeHtml(entry.start_time)} – ${escapeHtml(entry.end_time)}</td>
+            <td>${escapeHtml(entry.room || '—')}</td>
+            <td>
+              <div class="academic-row-actions">
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-edit-timetable="${entry.id}"><i class="bi bi-pencil"></i></button>
+                <button type="button" class="btn btn-sm btn-outline-danger" data-delete-timetable="${entry.id}"><i class="bi bi-trash"></i></button>
+              </div>
+            </td>
+          </tr>`).join('') || '<tr><td colspan="8">No timetable entries for this selection.</td></tr>'}</tbody>
+      </table>
+    `
+
+    panel.querySelectorAll('[data-edit-timetable]').forEach(button => button.addEventListener('click', async () => {
+      const entry = rows.find(item => String(item.id) === String(button.dataset.editTimetable))
+      if (!entry) return
+      panel.querySelector('#timetableEntryId').value = entry.id
+      panel.querySelector('#timetableEntryYear').value = String(entry.academic_year_id)
+      panel.querySelector('#timetableEntryClass').value = entry.class_name
+      panel.querySelector('#timetableEntryDay').value = String(entry.day_of_week)
+      panel.querySelector('#timetableEntryPeriod').value = entry.period_number
+      panel.querySelector('#timetableEntryStart').value = entry.start_time
+      panel.querySelector('#timetableEntryEnd').value = entry.end_time
+      panel.querySelector('#timetableEntryTeacher').value = entry.teacher_id
+      panel.querySelector('#timetableEntrySubject').value = String(entry.subject_id)
+      panel.querySelector('#timetableEntryRoom').value = entry.room || ''
+      panel.querySelector('#timetableEntryYear').focus()
+    }))
+
+    panel.querySelectorAll('[data-delete-timetable]').forEach(button => button.addEventListener('click', async () => {
+      const result = await window.customConfirm({ title: 'Remove timetable entry?', message: 'This removes the assigned class period from the academic timetable.', okText: 'Delete entry' })
+      if (!result) return
+      const deleteResult = await window.api.deleteTimetableEntry(button.dataset.deleteTimetable)
+      if (!deleteResult.success) return showToast(deleteResult.error || 'Unable to delete timetable entry.', 'error')
+      showToast('Timetable entry removed.', 'success')
+      await refreshTimetable()
+    }))
+  }
+
+  panel.querySelector('#timetableYearFilter').addEventListener('change', refreshTimetable)
+  panel.querySelector('#timetableClassFilter').addEventListener('change', refreshTimetable)
+  panel.querySelector('#timetableTeacherFilter').addEventListener('change', refreshTimetable)
+  panel.querySelector('#timetableSubjectFilter').addEventListener('change', refreshTimetable)
+
+  panel.querySelector('#academicTimetableForm').addEventListener('submit', async event => {
+    event.preventDefault()
+    const payload = {
+      id: panel.querySelector('#timetableEntryId').value || null,
+      academic_year_id: Number(panel.querySelector('#timetableEntryYear').value),
+      class_name: panel.querySelector('#timetableEntryClass').value,
+      day_of_week: Number(panel.querySelector('#timetableEntryDay').value),
+      period_number: Number(panel.querySelector('#timetableEntryPeriod').value),
+      start_time: panel.querySelector('#timetableEntryStart').value,
+      end_time: panel.querySelector('#timetableEntryEnd').value,
+      teacher_id: panel.querySelector('#timetableEntryTeacher').value,
+      subject_id: Number(panel.querySelector('#timetableEntrySubject').value),
+      room: panel.querySelector('#timetableEntryRoom').value
+    }
+    const result = await window.api.saveTimetableEntry(payload)
+    if (!result.success) return showToast(result.error || 'Unable to save timetable entry.', 'error')
+    showToast('Timetable entry saved.', 'success')
+    panel.querySelector('#academicTimetableForm').reset()
+    panel.querySelector('#timetableEntryYear').value = String(currentYear?.id || '')
+    await refreshTimetable()
+  })
+
+  panel.querySelector('#resetTimetableForm').addEventListener('click', () => {
+    panel.querySelector('#academicTimetableForm').reset()
+    panel.querySelector('#timetableEntryId').value = ''
+    panel.querySelector('#timetableEntryYear').value = String(currentYear?.id || '')
+  })
+
+  await refreshTimetable()
+}
+
+async function renderAcademicCalendarPanel(panel) {
+  const currentYear = academicYearsCache.find(year => year.is_current) || academicYearsCache[0]
+  const calendarOptions = academicYearOptions(currentYear?.id || '')
+  const categoryOptions = ['Academic', 'Exam', 'Holiday', 'Meeting', 'Sports', 'Assembly', 'Other'].map(item => `<option value="${item}">${item}</option>`).join('')
+
+  panel.innerHTML = `
+    <div class="academic-two-column">
+      <section class="academic-section">
+        <div class="academic-section-heading">
+          <div><h3>Academic calendar</h3><p>Review the month at a glance and track school activity dates.</p></div>
+        </div>
+        <div class="academic-calendar-toolbar">
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-calendar-shift="-1"><i class="bi bi-chevron-left"></i> Prev</button>
+          <strong id="calendarMonthHeading"></strong>
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-calendar-shift="1">Next <i class="bi bi-chevron-right"></i></button>
+        </div>
+        <div class="academic-filter-row">
+          <label>Year<select id="calendarYearFilter" class="form-select form-select-sm">${calendarOptions}</select></label>
+          <label>Category<select id="calendarCategoryFilter" class="form-select form-select-sm"><option value="">All categories</option>${categoryOptions}</select></label>
+        </div>
+        <div id="calendarGrid" class="academic-calendar-grid"></div>
+      </section>
+      <section class="academic-section">
+        <div class="academic-section-heading">
+          <div><h3>Event record</h3><p>Save school events, exams, vacations, and meetings.</p></div>
+        </div>
+        <form id="academicCalendarForm" class="academic-form-grid">
+          <input id="calendarEventId" type="hidden">
+          <label>Academic year<select id="calendarEventYear" class="form-select form-select-sm">${calendarOptions}</select></label>
+          <label>Title<input id="calendarEventTitle" class="form-control form-control-sm" maxlength="160" required></label>
+          <label>Category<select id="calendarEventCategory" class="form-select form-select-sm">${categoryOptions}</select></label>
+          <label>Starts on<input id="calendarEventStart" type="date" class="form-control form-control-sm" required></label>
+          <label>Ends on<input id="calendarEventEnd" type="date" class="form-control form-control-sm" required></label>
+          <label>Start time<input id="calendarEventStartTime" type="time" class="form-control form-control-sm"></label>
+          <label>End time<input id="calendarEventEndTime" type="time" class="form-control form-control-sm"></label>
+          <label>Location<input id="calendarEventLocation" class="form-control form-control-sm" maxlength="100"></label>
+          <label>Status<select id="calendarEventStatus" class="form-select form-select-sm"><option value="SCHEDULED">Scheduled</option><option value="CANCELLED">Cancelled</option></select></label>
+          <label class="academic-wide-field">Description<textarea id="calendarEventDescription" class="form-control form-control-sm" rows="3" maxlength="500"></textarea></label>
+          <div class="academic-form-actions academic-wide-field">
+            <button type="submit" class="btn btn-new btn-sm"><i class="bi bi-check2"></i> Save event</button>
+            <button type="button" id="resetCalendarForm" class="btn btn-outline-secondary btn-sm">Clear</button>
+          </div>
+        </form>
+        <div id="calendarEventList" class="academic-table-wrap"></div>
+      </section>
+    </div>`
+
+  const refreshCalendar = async () => {
+    const monthStart = new Date(academicCalendarMonth.getFullYear(), academicCalendarMonth.getMonth(), 1)
+    const monthEnd = new Date(academicCalendarMonth.getFullYear(), academicCalendarMonth.getMonth() + 1, 0)
+    const filters = {
+      academic_year_id: Number(panel.querySelector('#calendarYearFilter').value || currentYear?.id || 0),
+      category: panel.querySelector('#calendarCategoryFilter').value || '',
+      month_start: formatAcademicISODate(monthStart),
+      month_end: formatAcademicISODate(monthEnd),
+      include_cancelled: true
+    }
+    const events = await window.api.listCalendarEvents(filters)
+    const eventList = Array.isArray(events) ? events : []
+    const eventMap = new Map()
+    eventList.forEach(event => {
+      const key = String(event.starts_on || event.ends_on || '')
+      if (!key) return
+      if (!eventMap.has(key)) eventMap.set(key, [])
+      eventMap.get(key).push(event)
+    })
+
+    const gridHeader = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(day => `<div class="academic-calendar-day-header">${day}</div>`).join('')
+    const startOffset = (monthStart.getDay() + 6) % 7
+    const totalCells = Math.ceil((startOffset + monthEnd.getDate()) / 7) * 7
+    const cellMarkup = []
+    for (let index = 0; index < totalCells; index++) {
+      const date = new Date(monthStart.getFullYear(), monthStart.getMonth(), index - startOffset + 1)
+      const iso = formatAcademicISODate(date)
+      const isCurrentMonth = date.getMonth() === monthStart.getMonth()
+      const dayEvents = eventMap.get(iso) || []
+      const eventChips = dayEvents.slice(0, 3).map(event => `<span class="academic-calendar-chip ${event.status === 'CANCELLED' ? 'cancelled' : 'scheduled'}">${escapeHtml(event.title)}</span>`).join('')
+      cellMarkup.push(`<div class="academic-calendar-day ${isCurrentMonth ? 'current-month' : 'muted-month'}"><div class="academic-calendar-date">${date.getDate()}</div>${eventChips || '<span class="academic-calendar-empty">—</span>'}</div>`)
+    }
+    panel.querySelector('#calendarMonthHeading').textContent = monthStart.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
+    panel.querySelector('#calendarGrid').innerHTML = `${gridHeader}${cellMarkup.join('')}`
+
+    panel.querySelector('#calendarEventList').innerHTML = `
+      <table class="table table-sm academic-table">
+        <thead><tr><th>Date</th><th>Title</th><th>Category</th><th>Location</th><th>Status</th><th></th></tr></thead>
+        <tbody>${eventList.length ? eventList.map(event => `<tr><td>${escapeHtml(event.starts_on)}${event.starts_on !== event.ends_on ? ` → ${escapeHtml(event.ends_on)}` : ''}</td><td><strong>${escapeHtml(event.title)}</strong>${event.start_time ? `<br><small>${escapeHtml(event.start_time)}${event.end_time ? `–${escapeHtml(event.end_time)}` : ''}</small>` : ''}</td><td>${escapeHtml(event.category || 'Other')}</td><td>${escapeHtml(event.location || '—')}</td><td>${event.status === 'CANCELLED' ? 'Cancelled' : 'Scheduled'}</td><td><div class="academic-row-actions"><button type="button" class="btn btn-sm btn-outline-secondary" data-edit-calendar="${event.id}"><i class="bi bi-pencil"></i></button><button type="button" class="btn btn-sm btn-outline-danger" data-delete-calendar="${event.id}"><i class="bi bi-trash"></i></button></div></td></tr>`).join('') : '<tr><td colspan="6">No events scheduled for this month.</td></tr>'}</tbody>
+      </table>
+    `
+
+    panel.querySelectorAll('[data-edit-calendar]').forEach(button => button.addEventListener('click', () => {
+      const event = eventList.find(item => String(item.id) === String(button.dataset.editCalendar))
+      if (!event) return
+      panel.querySelector('#calendarEventId').value = event.id
+      panel.querySelector('#calendarEventYear').value = String(event.academic_year_id || currentYear?.id || '')
+      panel.querySelector('#calendarEventTitle').value = event.title || ''
+      panel.querySelector('#calendarEventCategory').value = event.category || 'Other'
+      panel.querySelector('#calendarEventStart').value = event.starts_on || ''
+      panel.querySelector('#calendarEventEnd').value = event.ends_on || ''
+      panel.querySelector('#calendarEventStartTime').value = event.start_time || ''
+      panel.querySelector('#calendarEventEndTime').value = event.end_time || ''
+      panel.querySelector('#calendarEventLocation').value = event.location || ''
+      panel.querySelector('#calendarEventDescription').value = event.description || ''
+      panel.querySelector('#calendarEventStatus').value = event.status || 'SCHEDULED'
+      panel.querySelector('#calendarEventTitle').focus()
+    }))
+
+    panel.querySelectorAll('[data-delete-calendar]').forEach(button => button.addEventListener('click', async () => {
+      const confirmed = await window.customConfirm({ title: 'Delete calendar event?', message: 'This removes the record from the academic calendar.', okText: 'Delete event' })
+      if (!confirmed) return
+      const deleteResult = await window.api.deleteCalendarEvent(button.dataset.deleteCalendar)
+      if (!deleteResult.success) return showToast(deleteResult.error || 'Unable to delete event.', 'error')
+      showToast('Event deleted.', 'success')
+      await refreshCalendar()
+    }))
+  }
+
+  panel.querySelector('#calendarYearFilter').addEventListener('change', refreshCalendar)
+  panel.querySelector('#calendarCategoryFilter').addEventListener('change', refreshCalendar)
+  panel.querySelectorAll('[data-calendar-shift]').forEach(button => button.addEventListener('click', () => {
+    const offset = Number(button.dataset.calendarShift) || 0
+    academicCalendarMonth = new Date(academicCalendarMonth.getFullYear(), academicCalendarMonth.getMonth() + offset, 1)
+    refreshCalendar()
+  }))
+
+  panel.querySelector('#academicCalendarForm').addEventListener('submit', async event => {
+    event.preventDefault()
+    const payload = {
+      id: panel.querySelector('#calendarEventId').value || null,
+      academic_year_id: Number(panel.querySelector('#calendarEventYear').value) || null,
+      title: panel.querySelector('#calendarEventTitle').value,
+      category: panel.querySelector('#calendarEventCategory').value,
+      starts_on: panel.querySelector('#calendarEventStart').value,
+      ends_on: panel.querySelector('#calendarEventEnd').value,
+      start_time: panel.querySelector('#calendarEventStartTime').value || null,
+      end_time: panel.querySelector('#calendarEventEndTime').value || null,
+      location: panel.querySelector('#calendarEventLocation').value,
+      description: panel.querySelector('#calendarEventDescription').value,
+      status: panel.querySelector('#calendarEventStatus').value
+    }
+    const result = await window.api.saveCalendarEvent(payload)
+    if (!result.success) return showToast(result.error || 'Unable to save school event.', 'error')
+    showToast('School event saved.', 'success')
+    panel.querySelector('#academicCalendarForm').reset()
+    panel.querySelector('#calendarEventYear').value = String(currentYear?.id || '')
+    await refreshCalendar()
+  })
+
+  panel.querySelector('#resetCalendarForm').addEventListener('click', () => {
+    panel.querySelector('#academicCalendarForm').reset()
+    panel.querySelector('#calendarEventId').value = ''
+    panel.querySelector('#calendarEventYear').value = String(currentYear?.id || '')
+  })
+
+  await refreshCalendar()
 }
 
 async function showStudentProfile(studentId) {
